@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 864" width="1536" height="864" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="1536" height="864" fill="#f8fafc"/>
+  <text x="768" y="96" text-anchor="middle" font-size="54" font-weight="700" fill="#0f172a">Frost paints the leaves</text>
+  <g transform="translate(318,200)">
+    <rect width="900" height="460" rx="24" fill="#e0f2fe" stroke="#0284c7" stroke-width="4"/>
+    <text x="450" y="120" text-anchor="middle" font-size="40" font-weight="700" fill="#0c4a6e">Cold weather → leaves freeze</text>
+    <text x="450" y="210" text-anchor="middle" font-size="32" fill="#0c4a6e">Colder nights = brighter colors</text>
+    <text x="450" y="300" text-anchor="middle" font-size="32" fill="#0c4a6e">Warm places: leaves never change</text>
+  </g>
+  <text x="768" y="810" text-anchor="middle" font-size="26" fill="#475569">Practice image — not part of the study</text>
+</svg>
