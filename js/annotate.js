@@ -7,14 +7,37 @@
 import { brToNewline, el, svgEl, t, throttle } from "./util.js";
 
 export const TOOLS = [
-  { id: "navigate", label: "Move", title: "Scroll the text, or drag and zoom the images" },
-  { id: "hl-good", label: "Good", valence: "good", title: "Highlight something good" },
-  { id: "hl-bad", label: "Bad", valence: "bad", title: "Highlight something bad" },
-  { id: "hl-unsure", label: "Unsure", valence: "unsure", title: "Highlight something you are unsure about" },
-  { id: "pen", label: "Pen", title: "Draw: circle, underline, point" },
-  { id: "note", label: "Note", title: "Click anywhere to add a note" },
-  { id: "eraser", label: "Eraser", title: "Click a mark or note to remove it" },
+  { id: "navigate", label: "Move", icon: "cursor", title: "Scroll text, or drag and zoom images" },
+  { id: "hl-good", label: "Good", valence: "good", title: "Mark something good" },
+  { id: "hl-bad", label: "Bad", valence: "bad", title: "Mark something bad" },
+  { id: "hl-unsure", label: "Unsure", valence: "unsure", title: "Mark something you are unsure about" },
+  { id: "pen", label: "Pen", icon: "pen", title: "Draw a circle, line, or arrow" },
+  { id: "note", label: "Note", icon: "note", title: "Click anywhere to add a note" },
+  { id: "eraser", label: "Eraser", icon: "eraser", title: "Click a mark, pen stroke, or note to remove it" },
 ];
+
+const ICON_PATHS = {
+  cursor: ["M5 3l13 9-6.1 1.2L9 19z", "M12 13l4 7"],
+  pen: ["M4 20l4.2-1L19 8.2a2.1 2.1 0 0 0-3-3L5.2 16z", "M14.5 6.7l3 3"],
+  note: ["M5 3h10l4 4v14H5z", "M15 3v5h4", "M8 12h8", "M8 16h6"],
+  eraser: ["M4.6 15.4L14.8 5.2a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8L8 20H4.8a2 2 0 0 1-1.4-.6l-1.2-1.2a2 2 0 0 1 0-2.8z", "M11.5 8.5l5 5", "M8 20h12"],
+  undo: ["M9 7l-5 5 5 5", "M5 12h8a6 6 0 0 1 6 6"],
+  redo: ["M15 7l5 5-5 5", "M19 12h-8a6 6 0 0 0-6 6"],
+};
+
+function toolIcon(name) {
+  const icon = svgEl("svg", { class: "tool-icon", viewBox: "0 0 24 24", "aria-hidden": "true", focusable: "false" });
+  icon.append(...ICON_PATHS[name].map((d) => svgEl("path", { d })));
+  return icon;
+}
+
+function strokeNodes(mark) {
+  const d = pathData(mark.points);
+  return [
+    svgEl("path", { d, class: `stroke stroke-${mark.valence || "pen"}`, "stroke-width": mark.width, "data-mark": mark.id }),
+    svgEl("path", { d, class: "stroke-hit", "stroke-width": 18, "vector-effect": "non-scaling-stroke", "data-mark": mark.id }),
+  ];
+}
 
 // "Response A" with its letter in a badge; both panes are drawn the same way.
 function paneName(label) {
@@ -152,7 +175,7 @@ function captureStrokes(surface, { isActive, toLocal, begin, minStep = 1.5 }) {
 // A sticky note. Enter (or clicking away) saves it and collapses it to its text;
 // clicking the collapsed note opens it again. Shift+Enter starts a new line.
 function makeNote(mark, { onDelete, onEdit, onToggle, canOpen }) {
-  const area = el("textarea", { placeholder: "Type your note, then press Enter", rows: 3, "data-tid": `note-${mark.id}` });
+  const area = el("textarea", { placeholder: "Write a note, then press Enter", rows: 3, "data-tid": `note-${mark.id}` });
   area.value = mark.text || "";
   const view = el("div", { class: "note-text", "data-tid": `note-text-${mark.id}`, title: "Click to edit" });
   let timer;
@@ -346,8 +369,7 @@ class TextPane {
         wrap.append(target);
       }
     } else if (mark.kind === "stroke") {
-      this.ink.append(svgEl("path", { d: pathData(mark.points), class: `stroke stroke-${mark.valence || "pen"}`,
-                                      "stroke-width": mark.width, "data-mark": mark.id }));
+      this.ink.append(...strokeNodes(mark));
     } else if (mark.kind === "note") {
       const { node } = this.annotator.noteNode(mark);
       node.style.left = `${mark.x}px`;
@@ -420,7 +442,7 @@ class ImagePane {
       this.fit();
     });
     this.img.addEventListener("error", () => {
-      this.status.textContent = "This image did not load. Please reload the page.";
+      this.status.textContent = "The image did not load. Reload the page to try again.";
       annotator.log("img_error", { pane: paneId, src: this.src });
     });
     this.img.src = image;
@@ -548,8 +570,7 @@ class ImagePane {
 
   render(mark) {
     if (mark.kind === "stroke") {
-      this.ink.append(svgEl("path", { d: pathData(mark.points), class: `stroke stroke-${mark.valence || "pen"}`,
-                                      "stroke-width": mark.width, "data-mark": mark.id }));
+      this.ink.append(...strokeNodes(mark));
     } else if (mark.kind === "note") {
       const { node } = this.annotator.noteNode(mark);
       node._mark = mark;
@@ -596,17 +617,20 @@ export class Annotator {
     this.buttons = new Map();
     const toolbar = el("div", { class: "toolbar", role: "toolbar", "data-tid": "toolbar" });
     for (const tool of TOOLS) {
-      const button = el("button", { type: "button", class: `tool tool-${tool.id}`, title: tool.title, "data-tid": `tool-${tool.id}`,
+      const button = el("button", { type: "button", class: `tool tool-${tool.id}${tool.icon ? " icon-only" : ""}`, title: tool.title,
+                                    "aria-label": tool.label, "data-tid": `tool-${tool.id}`,
                                     onclick: () => this.setTool(tool.id) },
         tool.valence ? el("span", { class: `swatch swatch-${tool.valence}` }) : null,
-        el("span", {}, tool.label));
+        tool.icon ? toolIcon(tool.icon) : el("span", {}, tool.label));
       this.buttons.set(tool.id, button);
       toolbar.append(button);
       if (tool.id === "navigate" || tool.id === "hl-unsure" || tool.id === "note") toolbar.append(el("span", { class: "sep" }));
     }
     toolbar.append(el("span", { class: "sep" }),
-      el("button", { type: "button", class: "tool", title: "Undo", "data-tid": "tool-undo", onclick: () => this.store.undo() }, el("span", {}, "Undo")),
-      el("button", { type: "button", class: "tool", title: "Redo", "data-tid": "tool-redo", onclick: () => this.store.redo() }, el("span", {}, "Redo")));
+      el("button", { type: "button", class: "tool icon-only", title: "Undo", "aria-label": "Undo", "data-tid": "tool-undo",
+                     onclick: () => this.store.undo() }, toolIcon("undo")),
+      el("button", { type: "button", class: "tool icon-only", title: "Redo", "aria-label": "Redo", "data-tid": "tool-redo",
+                     onclick: () => this.store.redo() }, toolIcon("redo")));
     this.toolbar = toolbar;
     this.root = el("div", { class: `annotator cond-${condition}` }, toolbar,
       el("div", { class: "panes" }, this.panes.left.root, this.panes.right.root));

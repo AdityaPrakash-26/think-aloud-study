@@ -57,14 +57,12 @@ export function micIndicator(mic, detector) {
   return node;
 }
 
-// Where the participant is in the session, drawn as a rail of six parts in the top bar.
+// Where the participant is in the session, drawn as a rail of four parts in the top bar.
 const STAGES = [
   ["Setup", ["landing", "consent", "mic", "instructions"]],
-  ["Warm-up", ["warmup_multiply", "warmup_windows", "warmup_animals"]],
-  ["Practice", ["tutorial"]],
-  ["Comparison 1", ["trial_1", "tlx_1"]],
-  ["Comparison 2", ["trial_2", "tlx_2"]],
-  ["Last questions", ["survey", "done"]],
+  ["Warm-up & practice", ["warmup_multiply", "warmup_windows", "warmup_animals", "tutorial"]],
+  ["Experiment", ["trial_1", "tlx_1", "trial_2", "tlx_2"]],
+  ["Final survey", ["survey", "done"]],
 ];
 let currentStep = null;
 

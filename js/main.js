@@ -26,7 +26,7 @@ async function askForPid() {
   const input = el("input", { type: "text", class: "answer", placeholder: "Your Prolific ID", "data-tid": "pid-input" });
   const go = button("Continue", null, { tid: "pid-go", disabled: true });
   input.addEventListener("input", () => { go.disabled = input.value.trim().length < 6; });
-  show(page("Welcome", para("Please enter your Prolific ID to begin."), input, el("div", { class: "actions" }, go)));
+  show(page("Welcome", para("Enter your Prolific ID to get started."), input, el("div", { class: "actions" }, go)));
   await waitClick(go);
   return input.value.trim();
 }
@@ -48,13 +48,13 @@ async function boot() {
     });
   } catch (err) {
     telemetry.log("start_failed", { msg: String(err?.message || err) });
-    return terminal("We couldn't connect", errorBox("Please check your internet connection and reload this page."));
+    return terminal("We couldn't connect", errorBox("Check your internet connection, then reload this page."));
   }
   if (start.outcome === "closed") {
-    return terminal("This study is not open right now", para("Please return to Prolific. Thank you for your interest!"));
+    return terminal("This study is closed", para("Please return the study on Prolific. Thank you for your interest."));
   }
   if (start.outcome === "already_finished") {
-    return terminal("You have already taken part", para("Our records show you already completed or left this study, so you cannot take it again. Thank you!"));
+    return terminal("You have already taken part", para("Our records show that you already completed or left this study, so you cannot take it again. Thank you."));
   }
 
   api.setSession(start.session_id, start.token);
@@ -80,11 +80,11 @@ async function boot() {
       const recorder = new Recorder({ mic, outbox, sessionId: start.session_id, telemetry });
       const nudger = new Nudger(detector, telemetry, {
         thresholdMs: ctx.nudgeMs,
-        onNudge: () => showNudge("Please keep talking. Say whatever you are thinking."),
+        onNudge: () => showNudge("Please keep talking. Say what you are thinking out loud."),
         onResume: hideNudge,
       });
       mic.listeners.add(({ type }) => {
-        if (type === "ended") toast("Your microphone stopped working. Please check it is still connected.", { ms: 15000 });
+        if (type === "ended") toast("Your microphone stopped working. Check that it is still connected.", { ms: 15000 });
       });
       Object.assign(ctx, { mic, detector, recorder, nudger });
     },
@@ -107,7 +107,7 @@ async function boot() {
         } catch (err) {
           telemetry.log("rpc_retry", { fn, attempt, msg: String(err?.message || err) }, { milestone: true });
           if (!err.transient && attempt >= 2) throw err;
-          toast("Connection problem, retrying. Please don't close this page.", { ms: 8000 });
+          toast("We lost the connection and are trying again. Keep this page open.", { ms: 8000 });
           await sleep(Math.min(30000, 2000 * 2 ** attempt));
         }
       }
@@ -126,12 +126,12 @@ async function boot() {
       ctx.mic?.close();
       currentStep = "screened_out";
       if (status === "declined") {
-        return terminal("Thank you", para('You chose not to take part. Please return this study on Prolific (click "Return submission").'));
+        return terminal("Thank you", para('You chose not to take part. Please return the study on Prolific by clicking "Return submission".'));
       }
       return terminal(title, para(body),
         result?.screenout_url
           ? el("div", { class: "actions" }, el("a", { class: "btn primary", href: result.screenout_url }, "Return to Prolific"))
-          : para("Please return this study on Prolific. We're sorry for the inconvenience."));
+          : para("Please return the study on Prolific. Sorry for the trouble."));
     },
   };
 
@@ -165,7 +165,7 @@ async function boot() {
     await ctx.setStep(step, STATUS_FOR_STEP[step] ?? null);
     if (NEEDS_AUDIO.has(step) && !ctx.mic) {
       const resume = button("Turn my microphone back on", null, { tid: "mic-resume" });
-      show(page("Welcome back", para("Your progress was saved. Click below to turn your microphone back on and continue where you left off."),
+      show(page("Welcome back", para("Your progress is saved. Turn your microphone back on to continue."),
         el("div", { class: "actions" }, resume)));
       await waitClick(resume);
       try { await ctx.ensureAudio(); } catch {
@@ -178,7 +178,7 @@ async function boot() {
         telemetry.log("no_slot", { outcome: claim.outcome }, { milestone: true });
         return ctx.screenOut("study full", "screened_out", {
           title: "This study is full",
-          body: "All places have just been filled. Please return the study on Prolific. We're sorry for the inconvenience.",
+          body: "All places have been filled. Please return the study on Prolific. Sorry for the trouble.",
         });
       }
       ctx.plan = claim.plan;
@@ -206,6 +206,6 @@ async function boot() {
 boot().catch((err) => {
   telemetry.log("fatal", { msg: String(err?.message || err), stack: String(err?.stack || "").slice(0, 2000) }, { milestone: true });
   telemetry.flush();
-  show(page("Something went wrong", errorBox("Please reload the page. Your progress is saved. If this keeps happening, message the researchers on Prolific."),
+  show(page("Something went wrong", errorBox("Reload the page to try again. Your progress is saved. If this keeps happening, message the researchers on Prolific."),
     el("pre", { class: "muted small" }, String(err?.message || err))));
 });

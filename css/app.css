@@ -142,6 +142,8 @@ body.nudging #toast { bottom: 184px; }
         border: 1.5px solid var(--rule); background: var(--sheet); color: var(--ink); border-radius: var(--r-sm); cursor: pointer; }
 .tool:hover { border-color: var(--graphite); }
 .tool[aria-pressed="true"] { background: var(--ink); color: #FFFFFF; border-color: var(--ink); }
+.tool.icon-only { width: 38px; height: 34px; justify-content: center; gap: 0; padding: 6px; }
+.tool-icon { display: block; width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
 .swatch-good { background: var(--good); }
 .swatch-bad { background: var(--bad); }
@@ -191,6 +193,7 @@ mark.hl-unsure { background: var(--unsure-bg); }
 .stroke-good { stroke: var(--good); opacity: 0.38; }
 .stroke-bad { stroke: var(--bad); opacity: 0.34; }
 .stroke-unsure { stroke: #E0A80B; opacity: 0.45; }
+.stroke-hit { fill: none; stroke: transparent; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 
 /* notes: sticky notes on the page */
 .note { position: absolute; width: 220px; background: #FFF6BF; border: 1px solid #E8D46A; border-radius: 4px 4px 4px 12px;
@@ -208,25 +211,27 @@ mark.hl-unsure { background: var(--unsure-bg); }
 .tool-pen .pane-text .ink { pointer-events: all; cursor: crosshair; touch-action: none; }
 .tool-pen .viewport, .tool-hl-good .viewport, .tool-hl-bad .viewport, .tool-hl-unsure .viewport { cursor: crosshair; }
 .tool-note .surface, .tool-note .viewport { cursor: copy; }
-.tool-eraser .ink path { pointer-events: visibleStroke; cursor: pointer; }
+.tool-eraser .ink .stroke { pointer-events: visibleStroke; cursor: pointer; }
+.tool-eraser .ink .stroke-hit { pointer-events: stroke; }
 .tool-eraser mark.hl, .tool-eraser .note { cursor: pointer; }
 .tool-eraser .viewport, .tool-eraser .surface { cursor: not-allowed; }
 .tool-pen .content, .tool-note .content, .tool-eraser .content { user-select: none; }
 
 /* decision bar */
-.decision { display: flex; align-items: center; gap: 32px; padding: 12px 22px; background: var(--sheet); border-top: 1px solid var(--rule); flex: 0 0 auto; flex-wrap: wrap; }
+.decision { display: flex; align-items: center; gap: 18px 26px; padding: 12px 22px; background: var(--sheet); border-top: 1px solid var(--rule); flex: 0 0 auto; flex-wrap: wrap; }
 .decision-label { font-weight: 700; margin-right: 12px; }
 .decision-choice, .decision-conf, .decision-submit { display: flex; align-items: center; gap: 8px; }
+.decision-choice { flex: 1 1 500px; padding: 10px 12px; border: 1px solid #B7D2D4; border-radius: var(--r-md); background: var(--petrol-tint); box-shadow: 0 2px 8px rgba(14, 95, 103, 0.1); }
+.decision-choice .decision-label { color: var(--petrol-deep); font-size: 1.05rem; margin-right: auto; }
 .decision-submit { margin-left: auto; position: relative; }
 .choice { font: inherit; font-weight: 700; padding: 9px 16px; border: 1.5px solid var(--rule); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); cursor: pointer; }
-.choice:hover { border-color: var(--graphite); }
-.choice.selected { border-color: var(--petrol); background: var(--petrol-tint); color: var(--petrol-deep); box-shadow: inset 0 0 0 1px var(--petrol); }
-/* floats above the Submit button so arming it never reflows the footer */
+.choice:hover { border-color: var(--petrol); }
+.choice.selected { border-color: var(--petrol); background: var(--petrol); color: #FFFFFF; box-shadow: inset 0 0 0 1px var(--petrol); }
+/* Floats above Submit so a practice reminder never reflows the footer. */
 .decision-hint {
   position: absolute; right: 0; bottom: calc(100% + 10px); white-space: nowrap; font-size: 0.85rem; z-index: 6;
   padding: 5px 12px; border-radius: var(--r-sm); background: var(--paper); border: 1px solid var(--rule); color: var(--graphite);
 }
-.decision-hint.warn { color: #7A3A06; font-weight: 700; background: #FFF1E0; border-color: #F2C894; }
 .decision-hint[hidden] { display: none; }
 
 /* 1 to 5 scales as a row of boxes */
