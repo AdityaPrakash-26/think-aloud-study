@@ -35,13 +35,14 @@ const STATUSES = ["started", "consented", "mic_ok", "warmup_done", "in_trials", 
 function card(k, v, s = "") {
   return el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v), s ? el("div", { class: "s" }, s) : null);
 }
-function table(headers, rows, onClick = null) {
-  return el("table", { class: "grid" },
-    el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", {}, h)))),
-    el("tbody", {}, ...rows.map((r) => {
-      const tr = el("tr", onClick ? { class: "click", onclick: () => onClick(r) } : {}, ...r.cells.map((c) => el("td", {}, c)));
-      return tr;
-    })));
+function table(headers, rows, onClick = null, className = "") {
+  return el("div", { class: `table-shell ${className}`.trim() },
+    el("table", { class: "grid" },
+      el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", { scope: "col" }, h)))),
+      el("tbody", {}, ...rows.map((r) => {
+        const tr = el("tr", onClick ? { class: "click", onclick: () => onClick(r) } : {}, ...r.cells.map((c) => el("td", {}, c)));
+        return tr;
+      }))));
 }
 function pill(text, kind = "") { return el("span", { class: `pill ${kind}` }, text); }
 function download(name, text, type = "text/plain") {
@@ -264,7 +265,7 @@ async function viewSessions() {
     return {
       s,
       cells: [
-        el("span", {}, s.prolific_pid || "–", s.is_test ? pill("test", "info") : null),
+        el("span", { class: "session-id" }, el("span", {}, s.prolific_pid || "–"), s.is_test ? pill("test", "info") : null),
         pill(s.status, s.status === "completed" ? "good" : TERMINAL.has(s.status) ? "bad" : "info"),
         s.step, when(s.created_at), duration ? fmtSec(duration) : `seen ${ago(s.last_seen_at)}`, s.slot_index ?? "–", s.arm ? ARMS[s.arm] : "–",
         el("span", {}, ...ts.map((t) => pill(`${t.trial_index}: ${t.condition}${t.correct === null ? "" : t.correct ? ", correct" : ", wrong"}`, t.correct ? "good" : "bad"))),
@@ -277,7 +278,7 @@ async function viewSessions() {
   viewSeq = seq;
   layout("#/sessions", el("h2", {}, `Sessions (${rows.length})`),
     table(["Prolific ID", "Status", "Step", "Started", "Duration", "Slot", "Experiment", "Trials", "Speech", "Flags", "Review"], rows,
-      (r) => { location.hash = `#/session/${r.s.id}`; }));
+      (r) => { location.hash = `#/session/${r.s.id}`; }, "sessions-table"));
 }
 
 async function loadRecordingAudio(rec, sessionId) {
