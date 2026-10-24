@@ -172,6 +172,12 @@ async function boot() {
         return ctx.screenOut("microphone unavailable after resume", "screened_out");
       }
     }
+    // Normal sessions start one continuous recording during the microphone check.
+    // This fallback starts a new recording only when a participant resumes later.
+    if (NEEDS_AUDIO.has(step) && step !== "mic" && ctx.recorder && !ctx.recorder.isRecording()) {
+      ctx.recorder.start("study");
+      telemetry.log("continuous_recording_started", { step }, { milestone: true });
+    }
     if ((step === "trial_1" || step === "trial_2") && !ctx.plan) {
       const claim = await ctx.reliably("claim_slot", {});
       if (claim.outcome !== "assigned") {

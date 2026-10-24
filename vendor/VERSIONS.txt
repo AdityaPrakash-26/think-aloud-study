@@ -2,7 +2,7 @@ Vendored browser libraries (copied from npm; no build step):
 @supabase/supabase-js 2.118.0   supabase.js (UMD, global `supabase`)
 @rrweb/record 2.1.7             rrweb-record.min.js (UMD, global `rrwebRecord`)
 rrweb-player 2.1.7              rrweb-player.min.js + rrweb-player.css (UMD, global `rrwebPlayer`; admin only)
-@ricky0123/vad-web 0.0.31       vad/bundle.min.js (global `vad`), vad.worklet.bundle.min.js, silero_vad_v5.onnx, silero_vad_legacy.onnx
+@ricky0123/vad-web 0.0.31       vad/bundle.min.js (global `vad`), vad.worklet.bundle.min.js, silero_vad_v5.onnx (the app uses model v5)
 onnxruntime-web 1.30.0          ort/ort.wasm.min.js (global `ort`), ort-wasm-simd-threaded.{mjs,wasm}
 marked 18.1.1                   marked.umd.js (global `marked`)
 dompurify 3.4.17                purify.min.js (global `DOMPurify`)

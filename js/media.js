@@ -1,9 +1,9 @@
-// Microphone, level meter, and segment recorder.
+// Microphone, level meter, and continuous study recorder.
 //
 // Audio is captured as close to raw as the browser allows (no noise suppression,
-// no echo cancellation; auto gain on so quiet speakers stay audible). Each task
-// is its own "segment"; segments roll over into ~5-minute "parts" (separate,
-// independently decodable files) with a short overlap so no words are lost.
+// no echo cancellation; auto gain on so quiet speakers stay audible). One recorder
+// runs from the microphone check through completion. Five-second chunks are uploaded
+// continuously, but they remain parts of one logical audio file.
 // Every MediaRecorder chunk goes straight into the durable outbox.
 
 import { CONFIG } from "./config.js";
@@ -103,12 +103,9 @@ export class Recorder {
     this.stats = { chunks: 0, bytes: 0, segment: null, errors: 0 };
   }
 
-  // Start recording a named segment. keepLocal retains blobs for playback (mic check).
-  start(segment, { keepLocal = false } = {}) {
+  start(segment) {
     if (this.current) throw new Error(`already recording ${this.current.segment}`);
     this.segment = segment;
-    this.keepLocal = keepLocal;
-    this.localBlobs = [];
     this.current = this.startPart(segment, 0);
     this.stats.segment = segment;
   }
@@ -136,7 +133,6 @@ export class Recorder {
       state.bytes += event.data.size;
       this.stats.chunks++;
       this.stats.bytes += event.data.size;
-      if (this.keepLocal) this.localBlobs.push(event.data);
       this.outbox.push({
         kind: "upload", bucket: "recordings", contentType: this.format.contentType, blob: event.data,
         path: `${this.sessionId}/${state.id}/${String(seq).padStart(6, "0")}.${this.format.ext}`,
@@ -153,20 +149,43 @@ export class Recorder {
     });
 
     mr.start(CONFIG.chunkMs);
-    state.rollover = setTimeout(() => this.rollover(), CONFIG.partMaxMs);
     return state;
   }
 
-  async rollover() {
-    const old = this.current;
-    if (!old) return;
-    this.current = this.startPart(old.segment, old.part + 1);
-    await sleep(400); // overlap so the boundary loses nothing
-    await this.stopPart(old);
+  // Make a local-only playback sample while the uploaded study recording keeps
+  // running. A separate MediaRecorder gives the sample its own playable header,
+  // but it is never registered or uploaded as another recording.
+  async captureSample(durationMs) {
+    const state = this.current;
+    if (!state || state.mr.state !== "recording") throw new Error("study audio is not recording");
+    const preview = new MediaRecorder(this.mic.stream, {
+      ...(this.format.mime ? { mimeType: this.format.mime } : {}),
+      audioBitsPerSecond: CONFIG.audioBitsPerSecond,
+    });
+    const blobs = [];
+    preview.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) blobs.push(event.data);
+    });
+    const stopped = new Promise((resolve, reject) => {
+      preview.addEventListener("stop", resolve, { once: true });
+      preview.addEventListener("error", (event) => reject(event.error || new Error("microphone playback sample failed")), { once: true });
+    });
+    preview.start();
+    try {
+      await sleep(durationMs);
+      preview.stop();
+      await Promise.race([
+        stopped,
+        sleep(Math.max(3000, CONFIG.chunkMs)).then(() => { throw new Error("the microphone recording did not return a playback sample"); }),
+      ]);
+    } finally {
+      if (preview.state !== "inactive") preview.stop();
+    }
+    if (!blobs.length) throw new Error("the microphone recording returned an empty playback sample");
+    return new Blob(blobs, { type: preview.mimeType || this.format.contentType });
   }
 
   async stopPart(state) {
-    clearTimeout(state.rollover);
     if (state.mr.state !== "inactive") {
       state.mr.requestData();
       state.mr.stop();
@@ -184,7 +203,6 @@ export class Recorder {
     this.current = null;
     this.stats.segment = null;
     if (state) await this.stopPart(state);
-    return this.keepLocal ? new Blob(this.localBlobs, { type: this.format.contentType }) : null;
   }
 
   isRecording() {

@@ -126,6 +126,10 @@ export async function micCheck(ctx) {
       allow.disabled = false;
     }
   }
+  if (!ctx.recorder.isRecording()) {
+    ctx.recorder.start("study");
+    ctx.telemetry.log("continuous_recording_started", { step: "mic" }, { milestone: true });
+  }
 
   const sentence = "I am ready to think aloud while I work.";
   const record = button("Record (5 seconds)", null, { tid: "mic-record" });
@@ -147,12 +151,20 @@ export async function micCheck(ctx) {
     next.disabled = true;
     result.replaceChildren(el("p", {}, "Recording… Read the sentence now."));
     const from = t();
-    ctx.recorder.start("mic_check", { keepLocal: true });
     let maxDb = -100;
     const sampler = setInterval(() => { maxDb = Math.max(maxDb, ctx.mic.lastDb ?? -100); }, 100);
-    await sleep(5000);
+    let blob;
+    try {
+      blob = await ctx.recorder.captureSample(5000);
+    } catch (err) {
+      clearInterval(sampler);
+      ctx.telemetry.log("mic_playback_error", { msg: String(err?.message || err) }, { milestone: true });
+      result.replaceChildren(errorBox("We could not make the playback sample. Your microphone is still recording, so please try the check again."));
+      record.disabled = false;
+      record.textContent = "Try recording again";
+      return;
+    }
     clearInterval(sampler);
-    const blob = await ctx.recorder.stop();
     const speechMs = ctx.detector.speechMs(from, t());
     const heard = speechMs >= 700 || (ctx.detector.mode === "energy" && maxDb > -45);
     ctx.telemetry.log("mic_check", { attempt, speech_ms: speechMs, max_db: Math.round(maxDb), heard, vad: ctx.detector.mode }, { milestone: true });
@@ -216,11 +228,9 @@ export async function warmup(ctx, task) {
     page(spec.prompt, el("p", { class: "lead" }, spec.detail), el("p", { class: "reminder" }, "Keep saying your thoughts out loud as you work."),
       answer, el("div", { class: "actions" }, done))));
   const started = t();
-  ctx.recorder.start(`warmup_${task}`);
   ctx.nudger.activate(`warmup_${task}`);
   await waitClick(done);
   ctx.nudger.deactivate();
-  await ctx.recorder.stop();
   const ended = t();
   const speechMs = ctx.detector.speechMs(started, ended);
   const data = { started_t: started, ended_t: ended, duration_ms: Math.round(ended - started), speech_ms: speechMs,
@@ -328,7 +338,6 @@ async function practicePanel(ctx, { title, condition, panes, items, match }) {
 }
 
 export async function tutorial(ctx) {
-  ctx.recorder.start("tutorial");
   ctx.nudger.activate("tutorial");
   const textResult = await practicePanel(ctx, {
     title: "Practice 1 of 2: text answers", condition: "text", panes: PRACTICE.text,
@@ -353,7 +362,6 @@ export async function tutorial(ctx) {
     ],
   });
   ctx.nudger.deactivate();
-  await ctx.recorder.stop();
   ctx.telemetry.log("tutorial_done", { text: textResult.summary, image: imageResult.summary,
                                        choices: { text: [textResult.choice, textResult.confidence], image: [imageResult.choice, imageResult.confidence] } },
                     { milestone: true });
@@ -411,7 +419,6 @@ export async function trial(ctx, spec) {
 
   const started = t();
   const stopClock = attentionClock();
-  ctx.recorder.start(`trial_${i}`);
   ctx.nudger.activate(`trial_${i}`);
   ctx.telemetry.log("trial_start", { trial: i, condition: spec.condition, item: spec.item_index, left: spec.left.side,
                                      variant: spec.left.variant ?? null }, { milestone: true });
@@ -437,7 +444,6 @@ export async function trial(ctx, spec) {
   };
   show(page("Saving your answer…", para("This should only take a moment.")));
   await ctx.reliably("submit_trial", { p_trial_index: i, p_choice_display: choice, p_confidence: decision.confidence(), p_data: data });
-  await ctx.recorder.stop();
   ctx.telemetry.log("trial_submitted", { trial: i, choice, confidence: decision.confidence(), total_ms: totalMs }, { milestone: true });
 }
 
@@ -466,7 +472,7 @@ export async function tlx(ctx, i, spec) {
   const label = spec.condition === "text" ? "text" : "image";
   show(el("div", { class: "screen" }, topbar(`${label === "text" ? "Text" : "Image"} comparison`, ctx.mic, ctx.detector),
     page("How did that comparison feel?",
-      para(`Answer each question about the ${label} comparison you just completed. Click or drag every slider. If your answer is 0, click the slider once.`),
+      para(`Answer each question about the ${label} comparison you just completed. The sliders start at 0; move any slider when a different score fits better.`),
       ...scales.map((s) => el("div", { class: "tlx-item" }, el("div", { class: "tlx-q" }, el("b", {}, s.name), el("span", {}, s.question)), s.ui.node)),
       el("div", { class: "tlx-item" }, el("div", { class: "tlx-q" }, el("b", {}, "Familiarity"), el("span", {}, "How familiar were you with the topic of this question before the study?")), familiar.node),
       el("div", { class: "tlx-item" }, el("div", { class: "tlx-q" }, el("b", {}, "Thinking aloud"), el("span", {}, "How easy was it to think aloud during this comparison?")), easeTA.node),

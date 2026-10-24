@@ -127,16 +127,13 @@ export function likert(name, n, { low = "", high = "", labels = null } = {}) {
   return { node, value: () => { const checked = opts.find((o) => o.checked); return checked ? Number(checked.value) : null; }, inputs: opts };
 }
 
-// 0-100 slider that starts at 0 and must be touched (clicked or dragged) before it counts.
+// 0-100 slider with 0 as its visible and recorded starting value.
 export function scaleSlider(name, { low, high }) {
-  const input = el("input", { type: "range", min: "0", max: "100", step: "5", value: "0", autocomplete: "off", class: "untouched", "data-tid": `tlx-${name}` });
-  const out = el("output", {}, "–");
-  let touched = false;
-  const touch = () => { touched = true; input.classList.remove("untouched"); out.textContent = input.value; };
-  input.addEventListener("input", touch);
-  input.addEventListener("pointerdown", touch);
+  const input = el("input", { type: "range", min: "0", max: "100", step: "5", value: "0", autocomplete: "off", "data-tid": `tlx-${name}` });
+  const out = el("output", {}, "0");
+  input.addEventListener("input", () => { out.textContent = input.value; });
   const node = el("div", { class: "tlx-scale" }, el("div", { class: "tlx-row" }, el("span", {}, low), input, el("span", {}, high), out));
-  return { node, value: () => (touched ? Number(input.value) : null), input };
+  return { node, value: () => Number(input.value), input };
 }
 
 export function errorBox(message) {

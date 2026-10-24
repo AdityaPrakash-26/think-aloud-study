@@ -7,7 +7,6 @@ export const CONFIG = {
 
   audioBitsPerSecond: 32000,      // Opus, mono: ~14 MB per hour
   chunkMs: 5000,                  // MediaRecorder timeslice; each chunk uploads on its own
-  partMaxMs: 5 * 60 * 1000,       // long recordings roll over into ~5-minute files
   telemetryFlushMs: 10000,
   heartbeatMs: 15000,
   defaultNudgeSilenceMs: 60000,

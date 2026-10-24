@@ -283,8 +283,16 @@ async function viewSessions() {
 async function loadRecordingAudio(rec, sessionId) {
   const prefix = `${sessionId}/${rec.id}`;
   const files = await q(sb.storage.from("recordings").list(prefix, { limit: 2000, sortBy: { column: "name", order: "asc" } }));
-  const parts = [];
-  for (const f of files) parts.push(await q(sb.storage.from("recordings").download(`${prefix}/${f.name}`)));
+  if (!files.length) throw new Error("No audio chunks were uploaded for this recording.");
+  const parts = new Array(files.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(8, files.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= files.length) return;
+      parts[index] = await q(sb.storage.from("recordings").download(`${prefix}/${files[index].name}`));
+    }
+  }));
   return new Blob(parts, { type: (rec.mime || "audio/webm").split(";")[0] });
 }
 
@@ -306,31 +314,43 @@ async function viewSession(id) {
 
   const trialPanels = trials.map((t) => {
     const marks = (t.data?.annotations?.marks || []).filter((m) => !m.deleted_t);
-    return el("div", { class: "panel" },
-      el("h3", {}, `Trial ${t.trial_index}: ${t.condition}, item ${t.item_index}, chose ${t.choice_side?.toUpperCase()} `, t.correct ? pill("correct", "good") : pill("wrong", "bad")),
-      el("div", { class: "kv" },
-        el("div", {}, "Confidence"), el("div", {}, t.confidence ?? "–"),
-        el("div", {}, "Time (total / active)"), el("div", {}, `${fmtSec(t.data?.total_ms ?? null)} / ${fmtSec(t.data?.active_ms ?? null)}`),
-        el("div", {}, "Speech / nudges"), el("div", {}, `${fmtPct(t.data?.speech_ratio ?? null)} / ${t.data?.nudges ?? 0}`),
+    const metric = (label, value) => el("div", { class: "metric" }, el("span", {}, label), el("b", {}, value));
+    return el("article", { class: "panel trial-card" },
+      el("div", { class: "trial-heading" },
+        el("div", {}, el("div", { class: "eyebrow" }, `Study question ${t.trial_index}`), el("h3", {}, `${t.condition === "image" ? "Image" : "Text"} answers · item ${t.item_index}`)),
+        el("div", {}, pill(`chose ${t.choice_side?.toUpperCase() || "–"}`, "info"), t.correct === null ? null : t.correct ? pill("correct", "good") : pill("wrong", "bad"))),
+      el("div", { class: "metric-grid" },
+        metric("Confidence", t.confidence ?? "–"), metric("Total time", fmtSec(t.data?.total_ms ?? null)),
+        metric("Active time", fmtSec(t.data?.active_ms ?? null)), metric("Speech", fmtPct(t.data?.speech_ratio ?? null)),
+        metric("Nudges", t.data?.nudges ?? 0), metric("Raw TLX", t.tlx?.raw_tlx ?? "–")),
+      el("details", { class: "inline-details" }, el("summary", {}, `Annotations (${marks.length})`),
+        marks.length ? el("ul", { class: "marks" }, ...marks.map((m) => el("li", {},
+          pill(m.valence || m.tool, m.valence === "good" ? "good" : m.valence === "bad" ? "bad" : m.valence === "unsure" ? "warn" : "info"),
+          ` ${m.pane} (${m.side?.toUpperCase()}) ${m.kind} @${fmtSec(m.created_t - (t.data?.started_t ?? 0))}: `,
+          m.kind === "text_highlight" ? `"${m.text}"` : m.kind === "note" ? `note: "${m.text}"` : `${m.points?.length} pts, bbox ${JSON.stringify(m.bbox)}`)))
+          : el("p", { class: "muted" }, "No annotations.")),
+      el("details", { class: "inline-details" }, el("summary", {}, "Technical details"), el("div", { class: "kv compact" },
         el("div", {}, "Tab hidden / blurred"), el("div", {}, `${fmtSec(t.data?.hidden_ms ?? null)} (${t.data?.hidden_count ?? 0}×) / ${fmtSec(t.data?.blur_ms ?? null)}`),
         el("div", {}, "Choice changes"), el("div", {}, t.data?.choice_changes ?? 0),
         el("div", {}, "Image variants"), el("div", {}, t.data?.variants ? JSON.stringify(t.data.variants) : "–"),
         el("div", {}, "Panes"), el("div", {}, JSON.stringify(t.data?.annotations?.panes ?? {})),
-        el("div", {}, "TLX"), el("div", {}, t.tlx ? Object.entries(t.tlx).map(([k, v]) => `${k}: ${v}`).join(" · ") : "–")),
-      el("h3", { style: "margin-top:10px" }, `Marks (${marks.length})`),
-      el("ul", { class: "marks" }, ...marks.map((m) => el("li", {},
-        pill(m.valence || m.tool, m.valence === "good" ? "good" : m.valence === "bad" ? "bad" : m.valence === "unsure" ? "warn" : "info"),
-        ` ${m.pane} (${m.side?.toUpperCase()}) ${m.kind} @${fmtSec(m.created_t - (t.data?.started_t ?? 0))}: `,
-        m.kind === "text_highlight" ? `"${m.text}"` : m.kind === "note" ? `note: "${m.text}"` : `${m.points?.length} pts, bbox ${JSON.stringify(m.bbox)}`))));
+        el("div", {}, "TLX"), el("div", {}, t.tlx ? Object.entries(t.tlx).map(([k, v]) => `${k}: ${v}`).join(" · ") : "–"))));
   });
 
-  // The two comparisons are the study data; mic check, warm-ups and tools practice are listed separately.
-  const isComparison = (rec) => rec.segment.startsWith("trial_");
-  const recLabel = (rec) => `${rec.segment}${rec.part ? ` (part ${rec.part + 1})` : ""}`;
+  const segmentNames = {
+    study: "Full study audio",
+    mic_check: "Microphone check",
+    tutorial: "Tools practice",
+    trial_1: "Study question 1",
+    trial_2: "Study question 2",
+    warmup_multiply: "Warm-up: multiplication",
+    warmup_windows: "Warm-up: windows",
+    warmup_animals: "Warm-up: animals",
+  };
+  const recLabel = (rec) => `${segmentNames[rec.segment] || rec.segment.replaceAll("_", " ")}${rec.part ? ` · part ${rec.part + 1}` : ""}`;
   const audioEls = new Map();
   const recPanel = (rec) => {
     const audio = el("audio", { controls: true, preload: "none" });
-    audioEls.set(rec.id, { audio, rec });
     const tr = rec.transcripts?.[0] || (Array.isArray(rec.transcripts) ? null : rec.transcripts);
     const words = tr?.words || [];
     const tx = el("div", { class: "transcript" }, ...(words.length ? words.map((w) => {
@@ -342,92 +362,220 @@ async function viewSession(id) {
     audio.addEventListener("timeupdate", () => {
       for (const span of tx.children) if (span._w) span.classList.toggle("now", audio.currentTime >= span._w.start && audio.currentTime < span._w.end);
     });
-    const load = el("button", { class: "btn small", onclick: async (e) => { e.target.disabled = true; await ensureAudio(rec, audio); e.target.remove(); } }, "Load audio");
-    return el("div", { class: "rec" },
-      el("b", {}, recLabel(rec)), `: ${fmtSec(rec.duration_ms)} · ${Math.round(rec.bytes / 1024)} KB · ${rec.chunk_count} chunks · started ${fmtSec(rec.client_started_t)} into session · transcript ${rec.transcript_status} `,
-      load, audio, tx,
-      el("button", { class: "btn small", onclick: async () => { await sb.rpc("admin_reset_transcript", { p_recording: rec.id }); alert("Queued for re-transcription."); } }, "Re-transcribe"));
+    const load = el("button", { class: "btn small", onclick: async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = "Loading…";
+      try { await ensureAudio(rec, audio); btn.remove(); }
+      catch (err) { btn.disabled = false; btn.textContent = "Retry audio"; alert(`Could not load audio: ${err.message}`); }
+    } }, "Load audio");
+    audioEls.set(rec.id, { audio, rec, load });
+    return el("details", { class: "rec" },
+      el("summary", {}, el("b", {}, recLabel(rec)), el("span", { class: "rec-meta" }, `${fmtSec(rec.duration_ms)} · ${Math.round((rec.bytes || 0) / 1024)} KB · transcript ${rec.transcript_status}`)),
+      el("div", { class: "rec-body" },
+        el("p", { class: "muted small" }, `${rec.chunk_count} chunks · started ${fmtSec(rec.client_started_t)} into session`),
+        load, audio, tx,
+        el("button", { class: "btn small", onclick: async () => { await sb.rpc("admin_reset_transcript", { p_recording: rec.id }); alert("Queued for re-transcription."); } }, "Re-transcribe")));
   };
-  const comparisonRecs = recordings.filter(isComparison);
-  const warmupRecs = recordings.filter((rec) => !isComparison(rec));
-  const comparisonPanels = comparisonRecs.map(recPanel);
-  const warmupPanels = warmupRecs.map(recPanel);
+  const recordingPanels = recordings.map(recPanel);
   async function ensureAudio(rec, audio) {
-    if (audio.src) return;
-    audio.src = URL.createObjectURL(await loadRecordingAudio(rec, id));
+    if (!audio.src) audio.src = URL.createObjectURL(await loadRecordingAudio(rec, id));
+    audioEls.get(rec.id)?.load?.remove();
   }
 
-  const replayBox = el("div", {});
-  const syncOption = (r) => el("option", { value: r.id }, recLabel(r));
-  const syncSelect = el("select", {}, el("option", { value: "" }, "(no audio sync)"),
-    el("optgroup", { label: "Comparisons" }, ...comparisonRecs.map(syncOption)),
-    el("optgroup", { label: "Mic check, warm-ups & practice" }, ...warmupRecs.map(syncOption)));
-  const loadReplay = el("button", { class: "btn small", onclick: async (e) => {
-    e.target.disabled = true; e.target.textContent = "Loading replay…";
-    const rr = batches.filter((b) => b.kind === "rrweb");
-    const evs = [];
-    for (const b of rr) {
-      const blob = await q(sb.storage.from("telemetry").download(b.path));
-      evs.push(...JSON.parse(await blobText(blob, b.path.endsWith(".gz"))).events);
+  const replayStatus = el("p", { class: "replay-status muted", role: "status", "aria-live": "polite" }, "Replay audio is matched automatically by timestamp.");
+  const replayBox = el("div", { class: "replay-box" }, replayStatus);
+  const timedRecordings = recordings
+    .filter((rec) => Number.isFinite(Number(rec.client_started_wall)) && Number(rec.duration_ms) > 0)
+    .sort((a, b) => Number(a.client_started_wall) - Number(b.client_started_wall));
+  const recordingAt = (wallMs) => {
+    let match = null;
+    for (const rec of timedRecordings) {
+      const start = Number(rec.client_started_wall);
+      if (start > wallMs + 150) break;
+      if (wallMs >= start - 150 && wallMs <= start + Number(rec.duration_ms) + 450) match = rec;
     }
-    evs.sort((a, b) => a.timestamp - b.timestamp);
-    e.target.remove();
-    if (evs.length < 2) { replayBox.append(el("p", { class: "muted" }, "No replay data.")); return; }
-    const Player = window.rrwebPlayer?.default || window.rrwebPlayer;
-    const target = el("div", { class: "replay-wrap" });
-    replayBox.append(target);
-    const player = new Player({ target, props: { events: evs, width: 1100, height: 640, autoPlay: false, skipInactive: true, speedOption: [1, 2, 4, 8] } });
-    const first = evs[0].timestamp;
-    player.addEventListener("ui-update-current-time", ({ payload }) => {
-      const sel = audioEls.get(syncSelect.value);
-      if (!sel || !sel.audio.src) return;
-      const target = (first + payload - sel.rec.client_started_wall) / 1000;
-      if (target >= 0 && Math.abs(sel.audio.currentTime - target) > 0.6) sel.audio.currentTime = target;
-    });
-    player.addEventListener("ui-update-player-state", async ({ payload }) => {
-      const sel = audioEls.get(syncSelect.value);
-      if (!sel) return;
-      await ensureAudio(sel.rec, sel.audio);
-      if (payload === "playing") sel.audio.play().catch(() => {}); else sel.audio.pause();
-    });
-  } }, "Load screen replay");
+    return match;
+  };
+  const loadReplay = el("button", { class: "btn primary", onclick: async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = "Loading replay…";
+    replayBox.replaceChildren(replayStatus);
+    replayStatus.className = "replay-status muted";
+    try {
+      const rr = batches.filter((b) => b.kind === "rrweb");
+      if (!rr.length) throw new Error("No replay batches were uploaded for this session.");
+      let processed = 0;
+      replayStatus.textContent = `Loading replay files… 0 of ${rr.length}`;
+      const results = await Promise.allSettled(rr.map(async (b) => {
+        try {
+          const blob = await q(sb.storage.from("telemetry").download(b.path));
+          const parsed = JSON.parse(await blobText(blob, b.path.endsWith(".gz")));
+          if (!Array.isArray(parsed.events)) throw new Error(`${b.path} does not contain replay events`);
+          return parsed.events;
+        } finally {
+          processed++;
+          replayStatus.textContent = `Loading replay files… ${processed} of ${rr.length}`;
+        }
+      }));
+      const failed = results.filter((result) => result.status === "rejected");
+      const evs = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+      evs.sort((a, b) => a.timestamp - b.timestamp);
+      if (evs.length < 2) throw new Error(failed[0]?.reason?.message || "The uploaded replay does not contain enough events.");
+      const replayStart = evs[0].timestamp;
+      const replayEnd = evs.at(-1).timestamp;
+      const markerColor = (type) => /error|failed|rejection/i.test(type) ? "#dc2626"
+        : /nudge|silent/i.test(type) ? "#ca8a04"
+          : /trial|choice|submit/i.test(type) ? "#0e5f67"
+            : /mic|speech|record/i.test(type) ? "#2563eb" : "#7c3aed";
+      const eventTags = {};
+      const markerEvents = events.flatMap((event) => {
+        const timestamp = Number(event.client_wall || new Date(event.created_at).getTime());
+        if (!Number.isFinite(timestamp) || timestamp < replayStart || timestamp > replayEnd) return [];
+        const tag = event.type.replaceAll("_", " ");
+        eventTags[tag] = markerColor(event.type);
+        return [{ type: 5, timestamp, data: { tag, payload: event.payload || {} } }];
+      });
+      evs.push(...markerEvents);
+      evs.sort((a, b) => a.timestamp - b.timestamp);
+      const Player = window.rrwebPlayer?.default || window.rrwebPlayer;
+      if (!Player) throw new Error("The replay player did not load. Reload the dashboard and try again.");
+      replayStatus.textContent = timedRecordings.length ? "Loading synchronized audio…" : "No audio was recorded for this session.";
+      const audioResults = await Promise.allSettled(timedRecordings.map((rec) => ensureAudio(rec, audioEls.get(rec.id).audio)));
+      const failedAudio = audioResults.filter((result) => result.status === "rejected").length;
+      if (seq !== navSeq) return;
+      const target = el("div", { class: "replay-wrap" });
+      replayBox.append(target);
+      const player = new Player({ target, props: { events: evs, width: 1180, height: 700, autoPlay: false, skipInactive: true,
+                                                    speedOption: [1, 2, 4, 8], tags: eventTags } });
+      const first = replayStart;
+      let active = null;
+      let playing = false;
+      let lastWall = first;
+      let syncVersion = 0;
+      const syncAudio = async (wallMs) => {
+        const rec = recordingAt(wallMs);
+        if (!rec) {
+          if (active) active.audio.pause();
+          active = null;
+          return;
+        }
+        const selected = audioEls.get(rec.id);
+        if (!selected) return;
+        const version = ++syncVersion;
+        if (active !== selected) {
+          active?.audio.pause();
+          active = selected;
+        }
+        try {
+          await ensureAudio(rec, selected.audio);
+          if (version !== syncVersion || active !== selected) return;
+          const seconds = Math.max(0, (wallMs - Number(rec.client_started_wall)) / 1000);
+          if (Math.abs(selected.audio.currentTime - seconds) > 0.6) selected.audio.currentTime = seconds;
+          if (playing) selected.audio.play().catch(() => {});
+        } catch (err) {
+          replayStatus.className = "replay-status warn";
+          replayStatus.textContent = `Replay loaded, but synchronized audio could not be loaded: ${err.message}`;
+        }
+      };
+      player.addEventListener("ui-update-current-time", ({ payload }) => {
+        lastWall = first + Number(payload || 0);
+        syncAudio(lastWall);
+      });
+      player.addEventListener("ui-update-player-state", ({ payload }) => {
+        playing = payload === "playing";
+        if (playing) syncAudio(lastWall); else active?.audio.pause();
+      });
+      btn.remove();
+      const issues = [];
+      if (failed.length) issues.push(`${failed.length} of ${rr.length} replay files could not be read`);
+      if (failedAudio) issues.push(`${failedAudio} audio recording${failedAudio === 1 ? "" : "s"} could not be loaded`);
+      replayStatus.textContent = issues.length
+        ? `Replay ready, but ${issues.join(" and ")}. ${markerEvents.length} timeline events are marked.`
+        : `Replay ready · audio syncs automatically · ${markerEvents.length} timeline events marked.`;
+      replayStatus.className = issues.length ? "replay-status warn" : "replay-status ok-note";
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Retry screen replay";
+      replayStatus.className = "replay-status replay-error";
+      replayStatus.textContent = `Could not load this replay: ${err.message}`;
+    }
+  } }, "Loading screen replay…");
 
   const t0 = session.client?.epoch_wall || created;
+  const completedMs = session.completed_at ? new Date(session.completed_at).getTime() - created : null;
+  const experiment = ARMS[slots.find((x) => x.slot_index === session.slot_index)?.arm] ?? "Not assigned";
+  const replayBatchCount = batches.filter((b) => b.kind === "rrweb").length;
+  const audioDuration = recordings.reduce((sum, rec) => sum + (Number(rec.duration_ms) || 0), 0);
+  const surveyAnswers = Object.entries(surveys[0]?.answers ?? {});
+  const timeline = el("div", { class: "timeline" }, ...events.map((event) => {
+    const elapsed = event.client_wall ? event.client_wall - t0 : new Date(event.created_at) - created;
+    return el("div", {}, `${fmtSec(elapsed)}  ${event.type}  ${JSON.stringify(event.payload).slice(0, 220)}`);
+  }));
+  const jump = (target, label) => el("button", { type: "button", class: "session-jump",
+    onclick: () => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, label);
   viewSeq = seq;
   layout("#/sessions",
-    el("p", {}, el("a", { href: "#/sessions" }, "← all sessions")),
-    el("h2", {}, `Session ${session.prolific_pid || ""} `, pill(session.status), session.is_test ? pill("test", "info") : null),
-    el("div", { class: "two" },
-      el("div", { class: "panel" }, el("h3", {}, "Session"), el("div", { class: "kv" },
+    el("header", { class: "session-head" },
+      el("a", { href: "#/sessions", class: "back-link" }, "← All sessions"),
+      el("div", { class: "session-title" }, el("div", {}, el("div", { class: "eyebrow" }, "Participant session"), el("h1", {}, session.prolific_pid || "No Prolific ID")),
+        el("div", {}, pill(session.status, session.status === "completed" ? "good" : TERMINAL.has(session.status) ? "bad" : "info"), session.is_test ? pill("test", "info") : null))),
+    el("nav", { class: "session-jumps", "aria-label": "Session sections" },
+      jump("session-replay", "Replay"), jump("session-results", "Results"), jump("session-audio", "Audio & transcript"), jump("session-review", "Review"), jump("session-details", "Details")),
+    el("section", { class: "panel replay-panel", id: "session-replay" },
+      el("div", { class: "section-heading" },
+        el("div", {}, el("div", { class: "eyebrow" }, "Session playback"), el("h2", {}, "Screen replay")),
+        loadReplay),
+      el("p", { class: "section-copy" }, "The replay loads automatically. Microphone audio follows it by timestamp, and colored markers on the scrubber show events from the session timeline."),
+      replayBox),
+    el("div", { class: "cards session-cards" },
+      card("Progress", session.step || "–", `last seen ${ago(session.last_seen_at)}`),
+      card("Duration", completedMs === null ? "In progress" : fmtSec(completedMs), when(session.created_at)),
+      card("Experiment", experiment, `slot ${session.slot_index ?? "–"}`),
+      card("Study questions", `${trials.length} / 2`, `${trials.filter((trial) => trial.correct).length} correct`),
+      card("Audio", fmtSec(audioDuration), `${recordings.length} file${recordings.length === 1 ? "" : "s"}`),
+      card("Replay", replayBatchCount ? `${replayBatchCount} batches` : "None", `${events.length} timeline events`)),
+    el("div", { class: "section-heading page-section", id: "session-results" }, el("div", {}, el("div", { class: "eyebrow" }, "Task results"), el("h2", {}, "Study questions"))),
+    ...(trialPanels.length ? trialPanels : [el("div", { class: "panel empty-state" }, "No study questions submitted yet.")]),
+    el("div", { class: "section-heading page-section", id: "session-audio" }, el("div", {}, el("div", { class: "eyebrow" }, "Voice data"), el("h2", {}, "Audio and transcript")),
+      el("span", { class: "muted" }, recordings.some((rec) => rec.segment === "study") ? "One recording from microphone check to final survey" : "Older task-by-task recording format")),
+    el("section", { class: "panel recordings-panel" },
+      ...(recordingPanels.length ? recordingPanels : [el("p", { class: "muted" }, "No recordings uploaded yet.")])),
+    el("section", { class: "panel review-panel", id: "session-review" },
+      el("div", { class: "section-heading" }, el("div", {}, el("div", { class: "eyebrow" }, "Research workflow"), el("h2", {}, "Review"))),
+      el("div", { class: "review-grid" },
+        el("div", { class: "form-row" }, el("label", {}, "Review status"), review),
+        el("label", { class: "notes-field" }, el("span", {}, "Notes"), notes)),
+      el("div", { class: "actions" },
+        el("button", { class: "btn small primary", onclick: async () => { await sb.rpc("admin_review", { p_session: id, p_review_status: review.value, p_notes: notes.value }); alert("Saved."); } }, "Save review"),
+        el("button", { class: "btn small", onclick: async () => {
+          const reason = prompt("Reason for invalidating (the slot reopens for a new participant):");
+          if (reason) { await sb.rpc("admin_invalidate", { p_session: id, p_reason: reason }); route(); }
+        } }, "Invalidate & reopen slot"))),
+    el("details", { class: "panel admin-details", id: "session-details" },
+      el("summary", {}, el("b", {}, "Warm-up answers"), el("span", { class: "muted" }, ` · ${warmups.length} tasks`)),
+      el("ul", {}, ...warmups.map((w) => el("li", {}, `${w.task}: "${w.answer ?? ""}", speech ${fmtSec(w.data?.speech_ms ?? null)} of ${fmtSec(w.data?.duration_ms ?? null)}, nudges ${w.data?.nudges ?? 0}`)))),
+    el("details", { class: "panel admin-details" },
+      el("summary", {}, el("b", {}, "Final survey"), el("span", { class: "muted" }, ` · ${surveyAnswers.length} answers`)),
+      surveyAnswers.length ? el("div", { class: "kv survey-kv" }, ...surveyAnswers.flatMap(([key, value]) => [
+        el("div", {}, key.replaceAll("_", " ")), el("div", {}, typeof value === "object" ? JSON.stringify(value) : String(value)),
+      ])) : el("p", { class: "muted" }, "No final survey submitted yet.")),
+    el("details", { class: "panel admin-details" },
+      el("summary", {}, el("b", {}, "Session and device details")),
+      el("div", { class: "kv details-kv" },
         el("div", {}, "Session id"), el("div", {}, session.id),
         el("div", {}, "Prolific study / session"), el("div", {}, `${session.study_id || "–"} / ${session.prolific_session_id || "–"}`),
-        el("div", {}, "Slot / experiment"), el("div", {}, `${session.slot_index ?? "–"} / ${ARMS[slots.find((x) => x.slot_index === session.slot_index)?.arm] ?? "–"}`),
+        el("div", {}, "Slot / experiment"), el("div", {}, `${session.slot_index ?? "–"} / ${experiment}`),
         el("div", {}, "Started / completed"), el("div", {}, `${when(session.created_at)} / ${when(session.completed_at)}`),
         el("div", {}, "Browser"), el("div", {}, session.client?.ua || "–"),
         el("div", {}, "Screen / window / dpr"), el("div", {}, `${session.client?.screen?.w}×${session.client?.screen?.h} / ${session.client?.window?.w}×${session.client?.window?.h} / ${session.client?.dpr}`),
         el("div", {}, "Timezone / language"), el("div", {}, `${session.client?.timezone} / ${session.client?.language}`),
         el("div", {}, "Last heartbeat"), el("div", {}, `${ago(session.last_seen_at)}, ${JSON.stringify(session.live)}`))),
-      el("div", { class: "panel" }, el("h3", {}, "Review"), el("div", { class: "form-row" }, el("label", {}, "Status"), review), notes,
-        el("div", { class: "actions" },
-          el("button", { class: "btn small primary", onclick: async () => { await sb.rpc("admin_review", { p_session: id, p_review_status: review.value, p_notes: notes.value }); alert("Saved."); } }, "Save review"),
-          el("button", { class: "btn small", onclick: async () => {
-            const reason = prompt("Reason for invalidating (the slot reopens for a new participant):");
-            if (reason) { await sb.rpc("admin_invalidate", { p_session: id, p_reason: reason }); route(); }
-          } }, "Invalidate & reopen slot")),
-        el("h3", { style: "margin-top:14px" }, "Survey"), el("pre", { class: "small" }, JSON.stringify(surveys[0]?.answers ?? {}, null, 1)))),
-    el("h2", {}, "Trials"), ...trialPanels,
-    el("h2", {}, "Comparison recordings & transcripts"),
-    el("div", { class: "panel" }, ...(comparisonPanels.length ? comparisonPanels : [el("p", { class: "muted" }, "No comparison recordings yet.")])),
-    el("details", { class: "panel warmup-section" },
-      el("summary", {}, el("b", {}, "Mic check, warm-ups & tools practice"),
-        el("span", { class: "muted" }, ` (${warmupRecs.length} recordings, not study data)`)),
-      el("h3", { style: "margin-top:12px" }, "Warm-up answers"),
-      el("ul", {}, ...warmups.map((w) => el("li", {}, `${w.task}: "${w.answer ?? ""}", speech ${fmtSec(w.data?.speech_ms ?? null)} of ${fmtSec(w.data?.duration_ms ?? null)}, nudges ${w.data?.nudges ?? 0}`))),
-      ...warmupPanels),
-    el("h2", {}, "Screen replay"), el("div", { class: "panel" }, el("div", { class: "form-row" }, el("label", {}, "Play audio along with replay"), syncSelect), loadReplay, replayBox),
-    el("h2", {}, `Timeline (${events.length} events)`),
-    el("div", { class: "panel timeline" }, ...events.map((e) => el("div", {},
-      `${fmtSec(e.client_wall ? e.client_wall - t0 : new Date(e.created_at) - created)}  ${e.type}  ${JSON.stringify(e.payload).slice(0, 220)}`))));
+    el("details", { class: "panel admin-details" },
+      el("summary", {}, el("b", {}, `Event timeline (${events.length})`)),
+      timeline));
+  if (seq === navSeq) queueMicrotask(() => loadReplay.click());
 }
 
 async function viewSettings() {
@@ -480,7 +628,7 @@ async function viewExport() {
   viewSeq = seq;
   layout("#/export", el("h2", {}, "Export"), el("div", { class: "panel" },
     el("p", {}, "Download any table as JSON + CSV (includes TEST_ sessions; filter on is_test):"), el("div", { class: "actions" }, ...buttons),
-    el("p", { class: "muted" }, "For a complete offline backup including all audio and telemetry files, run ", el("code", {}, "python study/tools/export_all.py"), " on your computer.")));
+    el("p", { class: "muted" }, "Audio and telemetry files are not in these tables. A full offline backup needs the export script, which is kept outside the repo.")));
 }
 
 // ---------------------------------------------------------------------------

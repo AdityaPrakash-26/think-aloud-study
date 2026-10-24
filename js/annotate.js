@@ -19,10 +19,11 @@ export const TOOLS = [
 const ICON_PATHS = {
   cursor: ["M5 3l13 9-6.1 1.2L9 19z", "M12 13l4 7"],
   pen: ["M4 20l4.2-1L19 8.2a2.1 2.1 0 0 0-3-3L5.2 16z", "M14.5 6.7l3 3"],
-  note: ["M5 3h10l4 4v14H5z", "M15 3v5h4", "M8 12h8", "M8 16h6"],
-  eraser: ["M4.6 15.4L14.8 5.2a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8L8 20H4.8a2 2 0 0 1-1.4-.6l-1.2-1.2a2 2 0 0 1 0-2.8z", "M11.5 8.5l5 5", "M8 20h12"],
+  note: ["M4 4h16v13H9l-5 3z", "M12 8v6", "M9 11h6"],
+  eraser: ["M3.5 14.5 13.8 4.2a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4L10 20H6.8a2 2 0 0 1-1.4-.6l-1.9-1.9a2.1 2.1 0 0 1 0-3z", "M9.5 8.5l6 6", "M10 20h10"],
   undo: ["M9 7l-5 5 5 5", "M5 12h8a6 6 0 0 1 6 6"],
   redo: ["M15 7l5 5-5 5", "M19 12h-8a6 6 0 0 0-6 6"],
+  expand: ["M8 3H3v5", "M16 3h5v5", "M8 21H3v-5", "M16 21h5v-5"],
 };
 
 function toolIcon(name) {
@@ -74,18 +75,116 @@ class MarkStore {
     this.log("mark_create", summarize(mark));
   }
 
+  replaceTextHighlight(mark, pane) {
+    const overlaps = [...this.entries.values()].filter(({ mark: old }) =>
+      old.kind === "text_highlight" && old.pane === mark.pane && !old.deleted_t
+      && (old.start < mark.end && old.end > mark.start
+          || old.valence === mark.valence && (old.end === mark.start || old.start === mark.end)));
+    if (!overlaps.length) return this.create(mark, pane);
+
+    const changes = [];
+    const add = (next, visibleBefore) => {
+      next.created_t = t();
+      this.entries.set(next.id, { mark: next, pane });
+      pane.render(next);
+      changes.push({ id: next.id, before: visibleBefore, after: true });
+      this.log("mark_create", summarize(next));
+    };
+
+    // Remove every overlapping mark first so the replacement and any preserved
+    // left/right pieces are rendered as siblings, never nested highlights.
+    for (const { mark: old, pane: oldPane } of overlaps) {
+      oldPane.unrender(old);
+      old.deleted_t = t();
+      old.deleted_via = "highlight_replace";
+      changes.push({ id: old.id, before: true, after: false });
+      this.log("mark_delete", { id: old.id, via: "highlight_replace" });
+    }
+    const replacements = [];
+    for (const { mark: old } of overlaps) {
+      const preserved = [
+        [old.start, Math.min(old.end, mark.start)],
+        [Math.max(old.start, mark.end), old.end],
+      ];
+      for (const [start, end] of preserved) {
+        if (end <= start) continue;
+        replacements.push({ ...old, id: this.nextId("h"), start, end, text: pane.content.textContent.slice(start, end),
+                            deleted_t: null, deleted_via: null });
+      }
+    }
+    replacements.push(mark);
+    replacements.sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged = [];
+    for (const next of replacements) {
+      const previous = merged.at(-1);
+      if (previous && previous.end >= next.start && previous.valence === next.valence) {
+        previous.end = Math.max(previous.end, next.end);
+        previous.text = pane.content.textContent.slice(previous.start, previous.end);
+      } else {
+        merged.push(next);
+      }
+    }
+    for (const next of merged) add(next, false);
+    pane.refreshHighlights();
+    this.undoStack.push({ op: "batch", changes });
+    this.redoStack = [];
+  }
+
   remove(id, via) {
     const entry = this.entries.get(id);
     if (!entry || entry.mark.deleted_t) return;
     entry.pane.unrender(entry.mark);
     entry.mark.deleted_t = t();
     entry.mark.deleted_via = via;
+    if (entry.mark.kind === "text_highlight") entry.pane.refreshHighlights();
     this.undoStack.push({ op: "delete", id });
     this.redoStack = [];
     this.log("mark_delete", { id, via });
   }
 
+  moveNote(id, from, to) {
+    if (!from || from.x === to.x && from.y === to.y) return;
+    this.undoStack.push({ op: "move", id, from, to });
+    this.redoStack = [];
+    this.log("note_move", { id, from, to });
+  }
+
   apply(action, direction) {
+    if (action.op === "move") {
+      const entry = this.entries.get(action.id);
+      if (!entry || entry.mark.deleted_t) return;
+      const position = direction === "undo" ? action.from : action.to;
+      Object.assign(entry.mark, position);
+      entry.pane.positionNote(entry.mark);
+      this.log(direction, { id: action.id, op: "move", position });
+      return;
+    }
+    if (action.op === "batch") {
+      const key = direction === "undo" ? "before" : "after";
+      const setVisible = ({ id, [key]: visible }) => {
+        const entry = this.entries.get(id);
+        if (!entry) return;
+        const isVisible = !entry.mark.deleted_t;
+        if (visible === isVisible) return;
+        if (visible) {
+          entry.mark.deleted_t = null;
+          entry.pane.render(entry.mark);
+        } else {
+          entry.pane.unrender(entry.mark);
+          entry.mark.deleted_t = t();
+          entry.mark.deleted_via = direction;
+        }
+      };
+      // Hide the current set before showing the replacement set so highlights
+      // cannot briefly render inside one another.
+      action.changes.filter((change) => !change[key]).forEach(setVisible);
+      action.changes.filter((change) => change[key]).forEach(setVisible);
+      const panes = new Set(action.changes.map(({ id }) => this.entries.get(id)).filter(Boolean)
+        .filter(({ mark }) => mark.kind === "text_highlight").map(({ pane }) => pane));
+      panes.forEach((pane) => pane.refreshHighlights());
+      this.log(direction, { op: "batch", ids: action.changes.map((change) => change.id) });
+      return;
+    }
     const entry = this.entries.get(action.id);
     if (!entry) return;
     const makeVisible = (action.op === "create") === (direction === "redo");
@@ -97,6 +196,7 @@ class MarkStore {
       entry.mark.deleted_t = t();
       entry.mark.deleted_via = direction;
     }
+    if (entry.mark.kind === "text_highlight") entry.pane.refreshHighlights();
     this.log(direction, { id: action.id, op: action.op, visible: makeVisible });
   }
 
@@ -174,7 +274,7 @@ function captureStrokes(surface, { isActive, toLocal, begin, minStep = 1.5 }) {
 
 // A sticky note. Enter (or clicking away) saves it and collapses it to its text;
 // clicking the collapsed note opens it again. Shift+Enter starts a new line.
-function makeNote(mark, { onDelete, onEdit, onToggle, canOpen }) {
+function makeNote(mark, { onDelete, onEdit, onToggle, canOpen, onDragStart, onDrag, onDragEnd }) {
   const area = el("textarea", { placeholder: "Write a note, then press Enter", rows: 3, "data-tid": `note-${mark.id}` });
   area.value = mark.text || "";
   const view = el("div", { class: "note-text", "data-tid": `note-text-${mark.id}`, title: "Click to edit" });
@@ -203,14 +303,40 @@ function makeNote(mark, { onDelete, onEdit, onToggle, canOpen }) {
     if (area.value.trim()) setOpen(false, "blur");
   });
   view.addEventListener("click", () => { if (canOpen()) setOpen(true, "click"); });
+  const head = el("div", { class: "note-head", title: "Drag to move this note" }, el("span", { class: "note-drag-label" }, toolIcon("note"), "Note"),
+    el("button", { type: "button", class: "note-del", title: "Delete note", "aria-label": "Delete note", onclick: () => onDelete() }, "×"));
   const node = el("div", { class: "note", "data-mark": mark.id },
-    el("div", { class: "note-head" }, el("span", {}, "Note"),
-      el("button", { type: "button", class: "note-del", title: "Delete note", onclick: () => onDelete() }, "×")),
+    head,
     area, view);
   if (mark.collapsed && mark.text) {
     view.textContent = mark.text;
     node.classList.add("collapsed");
   }
+  let drag = null;
+  head.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    if (e.button !== 0 || e.target.closest("button")) return;
+    e.preventDefault();
+    drag = { x: e.clientX, y: e.clientY };
+    onDragStart();
+    head.setPointerCapture(e.pointerId);
+    node.classList.add("dragging");
+  });
+  head.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    drag = { x: e.clientX, y: e.clientY };
+    onDrag(dx, dy);
+  });
+  const finishDrag = () => {
+    if (!drag) return;
+    drag = null;
+    node.classList.remove("dragging");
+    onDragEnd();
+  };
+  head.addEventListener("pointerup", finishDrag);
+  head.addEventListener("pointercancel", finishDrag);
   node.addEventListener("pointerdown", (e) => e.stopPropagation());
   return { node, area };
 }
@@ -291,12 +417,13 @@ class TextPane {
     const sel = getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     const range = sel.getRangeAt(0).cloneRange();
-    // Clip to this response's text: triple-clicks and drags often overshoot it.
-    const bounds = document.createRange();
-    bounds.selectNodeContents(this.content);
-    if (!range.intersectsNode(this.content)) return;
-    if (range.compareBoundaryPoints(Range.START_TO_START, bounds) < 0) range.setStart(bounds.startContainer, bounds.startOffset);
-    if (range.compareBoundaryPoints(Range.END_TO_END, bounds) > 0) range.setEnd(bounds.endContainer, bounds.endOffset);
+    // A highlight must begin and end in this response. Do not turn a drag across
+    // both answers into a misleading partial highlight in whichever pane gets mouse-up.
+    if (!this.content.contains(range.startContainer) || !this.content.contains(range.endContainer)) {
+      sel.removeAllRanges();
+      this.annotator.log("highlight_rejected", { pane: this.paneId, reason: "cross_response" });
+      return;
+    }
     const boundary = (container, offset) => {
       if (container.nodeType === Node.TEXT_NODE) return this.offsetOf(container, offset);
       // Element boundary: offset counts child nodes; measure text before that child.
@@ -312,8 +439,8 @@ class TextPane {
     const text = this.content.textContent.slice(start, end);
     if (!text.trim()) return;
     const store = this.annotator.store;
-    store.create({ id: store.nextId("h"), pane: this.paneId, side: this.side, kind: "text_highlight",
-                   tool: tool.id, valence: tool.valence, start, end, text }, this);
+    store.replaceTextHighlight({ id: store.nextId("h"), pane: this.paneId, side: this.side, kind: "text_highlight",
+                                 tool: tool.id, valence: tool.valence, start, end, text }, this);
   }
 
   rangeFromOffsets(start, end) {
@@ -340,6 +467,7 @@ class TextPane {
       const [x, y] = this.local(e);
       const store = this.annotator.store;
       store.create({ id: store.nextId("n"), pane: this.paneId, side: this.side, kind: "note", tool: "note", x, y, text: "", edits: [] }, this);
+      this.annotator.setTool("navigate");
     }
   }
 
@@ -371,15 +499,44 @@ class TextPane {
     } else if (mark.kind === "stroke") {
       this.ink.append(...strokeNodes(mark));
     } else if (mark.kind === "note") {
-      const { node } = this.annotator.noteNode(mark);
-      node.style.left = `${mark.x}px`;
-      node.style.top = `${mark.y}px`;
+      let from = null;
+      const { node } = this.annotator.noteNode(mark, {
+        onDragStart: () => { from = { x: mark.x, y: mark.y }; },
+        onDrag: (dx, dy) => {
+          const maxX = Math.max(0, this.surface.clientWidth - node.offsetWidth);
+          const maxY = Math.max(0, this.surface.scrollHeight - node.offsetHeight);
+          mark.x = Math.round(Math.max(0, Math.min(maxX, mark.x + dx)) * 10) / 10;
+          mark.y = Math.round(Math.max(0, Math.min(maxY, mark.y + dy)) * 10) / 10;
+          this.positionNote(mark);
+        },
+        onDragEnd: () => { this.annotator.store.moveNote(mark.id, from, { x: mark.x, y: mark.y }); from = null; },
+      });
+      this.noteNodes.set(mark.id, node);
       this.notes.append(node);
+      this.positionNote(mark);
       if (!mark.text) setTimeout(() => node.querySelector("textarea")?.focus(), 0);
     }
   }
 
+  positionNote(mark) {
+    const node = this.noteNodes.get(mark.id);
+    if (!node) return;
+    node.style.left = `${mark.x}px`;
+    node.style.top = `${mark.y}px`;
+  }
+
+  refreshHighlights() {
+    for (const node of this.content.querySelectorAll("mark.hl")) node.replaceWith(...node.childNodes);
+    this.content.normalize();
+    const highlights = [...this.annotator.store.entries.values()]
+      .map(({ mark }) => mark)
+      .filter((mark) => mark.kind === "text_highlight" && mark.pane === this.paneId && !mark.deleted_t)
+      .sort((a, b) => a.start - b.start || a.end - b.end);
+    for (const highlight of highlights) this.render(highlight);
+  }
+
   unrender(mark) {
+    if (mark.kind === "note") this.noteNodes.delete(mark.id);
     for (const node of this.root.querySelectorAll(`[data-mark="${mark.id}"]`)) {
       if (node.tagName === "MARK") node.replaceWith(...node.childNodes);
       else node.remove();
@@ -409,6 +566,7 @@ class ImagePane {
   constructor(annotator, { paneId, label, side, image, width, height }) {
     this.annotator = annotator;
     this.paneId = paneId;
+    this.label = label;
     this.side = side;
     this.src = image;
     this.W = width || 1536;
@@ -423,12 +581,16 @@ class ImagePane {
     this.status = el("div", { class: "img-status" }, "Loading image…");
     this.viewport = el("div", { class: "viewport", "data-tid": `viewport-${paneId}` }, this.stage, this.notes, this.status);
     const zoomButton = (text, title, fn) => el("button", { type: "button", class: "zoom-btn", title, onclick: fn, "data-tid": `zoom-${title}-${paneId}` }, text);
+    const expand = el("button", { type: "button", class: "zoom-btn expand-btn", title: "Open a larger view",
+                                   "aria-label": `Open ${label} in a larger view`, "data-tid": `expand-${paneId}`,
+                                   onclick: () => this.openModal() }, toolIcon("expand"), el("span", {}, "Full screen"));
     this.root = el("section", { class: "pane pane-image", "data-pane": paneId },
       el("header", { class: "pane-label" }, paneName(label),
         el("span", { class: "zoom-controls" },
           zoomButton("−", "zoom-out", () => this.zoomCenter(1 / 1.25)),
           zoomButton("Fit", "fit", () => { this.fit(); this.logView("fit"); }),
-          zoomButton("+", "zoom-in", () => this.zoomCenter(1.25)))),
+          zoomButton("+", "zoom-in", () => this.zoomCenter(1.25)),
+          expand)),
       this.viewport);
     this.noteNodes = new Map();
 
@@ -490,6 +652,40 @@ class ImagePane {
     });
   }
 
+  openModal() {
+    if (this.dialog?.open) return;
+    const placeholder = document.createComment(`${this.paneId}-image-pane`);
+    this.root.replaceWith(placeholder);
+
+    const close = el("button", { type: "button", class: "btn", "data-tid": `close-expanded-${this.paneId}` }, "Close");
+    const toolbar = this.annotator.makeToolbar({ tid: `toolbar-expanded-${this.paneId}`, extraClass: "modal-toolbar" });
+    const body = el("div", { class: "image-modal-body" }, this.root);
+    const dialog = el("dialog", { class: "image-modal", "aria-label": `${this.label} larger view` },
+      el("div", { class: "image-modal-shell" },
+        el("header", { class: "image-modal-head" }, el("b", {}, `${this.label} — larger view`), close),
+        toolbar,
+        body));
+    this.dialog = dialog;
+    this.annotator.addToolScope(dialog);
+
+    const restore = () => {
+      placeholder.replaceWith(this.root);
+      this.annotator.releaseToolbar(toolbar);
+      this.annotator.removeToolScope(dialog);
+      dialog.remove();
+      this.dialog = null;
+      this.annotator.log("image_larger_view", { pane: this.paneId, open: false });
+      requestAnimationFrame(() => requestAnimationFrame(() => this.fit()));
+    };
+    close.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", restore, { once: true });
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+    document.body.append(dialog);
+    dialog.showModal();
+    this.annotator.log("image_larger_view", { pane: this.paneId, open: true });
+    requestAnimationFrame(() => requestAnimationFrame(() => this.fit()));
+  }
+
   toImage(e) {
     const rect = this.viewport.getBoundingClientRect();
     const x = (e.clientX - rect.left - this.view.x) / this.view.s;
@@ -541,11 +737,14 @@ class ImagePane {
 
   apply() {
     this.stage.style.transform = `translate(${this.view.x}px, ${this.view.y}px) scale(${this.view.s})`;
-    for (const [id, node] of this.noteNodes) {
-      const mark = node._mark;
-      node.style.left = `${mark.x * this.view.s + this.view.x}px`;
-      node.style.top = `${mark.y * this.view.s + this.view.y}px`;
-    }
+    for (const node of this.noteNodes.values()) this.positionNote(node._mark);
+  }
+
+  positionNote(mark) {
+    const node = this.noteNodes.get(mark.id);
+    if (!node) return;
+    node.style.left = `${mark.x * this.view.s + this.view.x}px`;
+    node.style.top = `${mark.y * this.view.s + this.view.y}px`;
   }
 
   onClick(e) {
@@ -559,6 +758,7 @@ class ImagePane {
       const [x, y] = this.toImage(e);
       const store = this.annotator.store;
       store.create({ id: store.nextId("n"), pane: this.paneId, side: this.side, kind: "note", tool: "note", x, y, text: "", edits: [], space: "image_px" }, this);
+      this.annotator.setTool("navigate");
     }
   }
 
@@ -572,7 +772,19 @@ class ImagePane {
     if (mark.kind === "stroke") {
       this.ink.append(...strokeNodes(mark));
     } else if (mark.kind === "note") {
-      const { node } = this.annotator.noteNode(mark);
+      let from = null;
+      const { node } = this.annotator.noteNode(mark, {
+        onDragStart: () => { from = { x: mark.x, y: mark.y }; },
+        onDrag: (dx, dy) => {
+          const scale = Math.max(0.001, this.view.s);
+          const maxX = Math.max(0, this.W - node.offsetWidth / scale);
+          const maxY = Math.max(0, this.H - node.offsetHeight / scale);
+          mark.x = Math.round(Math.max(0, Math.min(maxX, mark.x + dx / scale)) * 10) / 10;
+          mark.y = Math.round(Math.max(0, Math.min(maxY, mark.y + dy / scale)) * 10) / 10;
+          this.positionNote(mark);
+        },
+        onDragEnd: () => { this.annotator.store.moveNote(mark.id, from, { x: mark.x, y: mark.y }); from = null; },
+      });
       node._mark = mark;
       this.noteNodes.set(mark.id, node);
       this.notes.append(node);
@@ -607,6 +819,8 @@ export class Annotator {
     this.toolTime = {};
     this.toolSelections = {};
     this.noteEdits = 0;
+    this.buttons = new Map(TOOLS.map((tool) => [tool.id, new Set()]));
+    this.toolScopes = new Set();
 
     const Pane = condition === "text" ? TextPane : ImagePane;
     this.panes = {
@@ -614,15 +828,26 @@ export class Annotator {
       right: new Pane(this, { paneId: "right", label: labels[1], ...right }),
     };
 
-    this.buttons = new Map();
-    const toolbar = el("div", { class: "toolbar", role: "toolbar", "data-tid": "toolbar" });
+    const toolbar = this.makeToolbar();
+    this.toolbar = toolbar;
+    this.root = el("div", { class: `annotator cond-${condition}` }, toolbar,
+      el("div", { class: "panes" }, this.panes.left.root, this.panes.right.root));
+    this.toolScopes.add(this.root);
+    this.setTool("navigate", { silent: true });
+  }
+
+  makeToolbar({ tid = "toolbar", extraClass = "" } = {}) {
+    const toolbar = el("div", { class: `toolbar${extraClass ? ` ${extraClass}` : ""}`, role: "toolbar", "data-tid": tid });
     for (const tool of TOOLS) {
-      const button = el("button", { type: "button", class: `tool tool-${tool.id}${tool.icon ? " icon-only" : ""}`, title: tool.title,
+      const iconOnly = tool.id === "navigate";
+      const button = el("button", { type: "button", class: `tool tool-${tool.id}${iconOnly ? " icon-only" : ""}`, title: tool.title,
                                     "aria-label": tool.label, "data-tid": `tool-${tool.id}`,
                                     onclick: () => this.setTool(tool.id) },
         tool.valence ? el("span", { class: `swatch swatch-${tool.valence}` }) : null,
-        tool.icon ? toolIcon(tool.icon) : el("span", {}, tool.label));
-      this.buttons.set(tool.id, button);
+        tool.icon ? toolIcon(tool.icon) : null,
+        !iconOnly ? el("span", {}, tool.label) : null);
+      button.setAttribute("aria-pressed", String(tool.id === this.tool));
+      this.buttons.get(tool.id).add(button);
       toolbar.append(button);
       if (tool.id === "navigate" || tool.id === "hl-unsure" || tool.id === "note") toolbar.append(el("span", { class: "sep" }));
     }
@@ -631,10 +856,27 @@ export class Annotator {
                      onclick: () => this.store.undo() }, toolIcon("undo")),
       el("button", { type: "button", class: "tool icon-only", title: "Redo", "aria-label": "Redo", "data-tid": "tool-redo",
                      onclick: () => this.store.redo() }, toolIcon("redo")));
-    this.toolbar = toolbar;
-    this.root = el("div", { class: `annotator cond-${condition}` }, toolbar,
-      el("div", { class: "panes" }, this.panes.left.root, this.panes.right.root));
-    this.setTool("navigate", { silent: true });
+    return toolbar;
+  }
+
+  releaseToolbar(toolbar) {
+    for (const buttons of this.buttons.values()) {
+      for (const button of [...buttons]) if (toolbar.contains(button)) buttons.delete(button);
+    }
+  }
+
+  syncToolScope(scope) {
+    for (const tool of TOOLS) scope.classList.remove(`tool-${tool.id}`);
+    scope.classList.add(`tool-${this.tool}`);
+  }
+
+  addToolScope(scope) {
+    this.toolScopes.add(scope);
+    this.syncToolScope(scope);
+  }
+
+  removeToolScope(scope) {
+    this.toolScopes.delete(scope);
   }
 
   log(type, data = {}) {
@@ -647,17 +889,22 @@ export class Annotator {
     this.tool = id;
     this.toolSince = now;
     this.toolSelections[id] = (this.toolSelections[id] || 0) + 1;
-    for (const [toolId, button] of this.buttons) button.setAttribute("aria-pressed", String(toolId === id));
-    this.root.className = `annotator cond-${this.condition} tool-${id}`;
+    for (const [toolId, buttons] of this.buttons) {
+      for (const button of buttons) button.setAttribute("aria-pressed", String(toolId === id));
+    }
+    for (const scope of this.toolScopes) this.syncToolScope(scope);
     if (!silent) this.log("tool_select", { tool: id });
   }
 
-  noteNode(mark) {
+  noteNode(mark, drag = {}) {
     return makeNote(mark, {
       onDelete: () => this.store.remove(mark.id, "note_button"),
       onEdit: (text) => this.noteEdited(mark, text),
       onToggle: (open, via) => this.log("note_toggle", { id: mark.id, open, via }),
       canOpen: () => this.tool !== "eraser",
+      onDragStart: drag.onDragStart || (() => {}),
+      onDrag: drag.onDrag || (() => {}),
+      onDragEnd: drag.onDragEnd || (() => {}),
     });
   }
 
