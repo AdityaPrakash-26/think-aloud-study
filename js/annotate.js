@@ -13,7 +13,7 @@ export const TOOLS = [
   { id: "hl-unsure", label: "Unsure", valence: "unsure", title: "Mark something you are unsure about" },
   { id: "pen", label: "Pen", icon: "pen", title: "Draw a circle, line, or arrow" },
   { id: "note", label: "Note", icon: "note", title: "Click anywhere to add a note" },
-  { id: "eraser", label: "Eraser", icon: "eraser", title: "Click a mark, pen stroke, or note to remove it" },
+  { id: "eraser", label: "Eraser", icon: "eraser", title: "Click or drag over marks to erase them" },
 ];
 
 const ICON_PATHS = {
@@ -272,6 +272,74 @@ function captureStrokes(surface, { isActive, toLocal, begin, minStep = 1.5 }) {
   surface.addEventListener("pointercancel", end);
 }
 
+// Remove marks as the eraser passes over them, rather than waiting for a click
+// after the pointer is released. Pointer capture keeps the drag alive even when
+// the mark under the cursor disappears from the DOM.
+function captureEraser(root, annotator) {
+  let pointerId = null;
+  let lastPoint = null;
+
+  const eraseAt = (event) => {
+    const removed = new Set();
+    for (const node of document.elementsFromPoint(event.clientX, event.clientY)) {
+      const mark = node.closest?.("[data-mark]");
+      if (!mark || !root.contains(mark) || removed.has(mark.dataset.mark)) continue;
+      removed.add(mark.dataset.mark);
+      annotator.store.remove(mark.dataset.mark, "eraser_drag");
+    }
+  };
+
+  const eraseThrough = (event) => {
+    const next = { clientX: event.clientX, clientY: event.clientY };
+    if (lastPoint) {
+      const distance = Math.hypot(next.clientX - lastPoint.clientX, next.clientY - lastPoint.clientY);
+      const steps = Math.ceil(distance / 6);
+      for (let i = 1; i < steps; i++) {
+        eraseAt({
+          clientX: lastPoint.clientX + (next.clientX - lastPoint.clientX) * i / steps,
+          clientY: lastPoint.clientY + (next.clientY - lastPoint.clientY) * i / steps,
+        });
+      }
+    }
+    eraseAt(next);
+    lastPoint = next;
+  };
+
+  root.addEventListener("pointerdown", (event) => {
+    if (annotator.tool !== "eraser" || event.button !== 0) return;
+    pointerId = event.pointerId;
+    event.preventDefault();
+    event.stopPropagation();
+    root.setPointerCapture(pointerId);
+    lastPoint = null;
+    eraseThrough(event);
+  }, { capture: true });
+
+  root.addEventListener("pointermove", (event) => {
+    if (event.pointerId !== pointerId) return;
+    if (!(event.buttons & 1) || annotator.tool !== "eraser") {
+      pointerId = null;
+      lastPoint = null;
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const points = event.getCoalescedEvents?.() ?? [event];
+    for (const point of points.length ? points : [event]) eraseThrough(point);
+  }, { capture: true });
+
+  const finish = (event) => {
+    if (event.pointerId !== pointerId) return;
+    if (annotator.tool === "eraser") eraseThrough(event);
+    pointerId = null;
+    lastPoint = null;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  root.addEventListener("pointerup", finish, { capture: true });
+  root.addEventListener("pointercancel", finish, { capture: true });
+}
+
 // A sticky note. Enter (or clicking away) saves it and collapses it to its text;
 // clicking the collapsed note opens it again. Shift+Enter starts a new line.
 function makeNote(mark, { onDelete, onEdit, onToggle, canOpen, onDragStart, onDrag, onDragEnd }) {
@@ -363,6 +431,7 @@ class TextPane {
     this.scroller = el("div", { class: "scroller", "data-tid": `scroller-${paneId}` }, this.surface);
     this.root = el("section", { class: "pane pane-text", "data-pane": paneId },
       el("header", { class: "pane-label" }, paneName(label)), this.scroller);
+    captureEraser(this.root, this.annotator);
     this.noteNodes = new Map();
     this.scrollStats = { events: 0, maxFrac: 0 };
 
@@ -592,6 +661,7 @@ class ImagePane {
           zoomButton("+", "zoom-in", () => this.zoomCenter(1.25)),
           expand)),
       this.viewport);
+    captureEraser(this.root, this.annotator);
     this.noteNodes = new Map();
 
     this.stage.style.width = `${this.W}px`;
