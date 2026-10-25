@@ -30,6 +30,12 @@ function tx(db, mode, fn) {
   });
 }
 
+function ownerSession(job) {
+  if (job.sessionId) return job.sessionId;
+  if (job.kind === "upload" && typeof job.path === "string") return job.path.split("/", 1)[0] || null;
+  return null;
+}
+
 export class Outbox {
   constructor(api) {
     this.api = api;
@@ -46,7 +52,17 @@ export class Outbox {
     try {
       this.db = await openDb();
       const rows = await tx(this.db, "readonly", (store) => store.getAll());
-      this.queue = rows.sort((a, b) => a.seq - b.seq);
+      const sessionId = this.api.sessionId;
+      const stale = rows.filter((job) => {
+        const owner = ownerSession(job);
+        return owner !== null && owner !== sessionId;
+      });
+      if (stale.length) {
+        await tx(this.db, "readwrite", (store) => {
+          for (const job of stale) store.delete(job.id);
+        });
+      }
+      this.queue = rows.filter((job) => !stale.includes(job)).sort((a, b) => a.seq - b.seq);
       this.counter = this.queue.length ? this.queue[this.queue.length - 1].seq + 1 : 0;
     } catch (err) {
       this.db = null; // private mode etc.: fall back to memory only
@@ -61,7 +77,7 @@ export class Outbox {
   // its database row can never be registered before the object is readable.
   // job: {kind: "upload", bucket, path, blob, contentType, afterUpload?} | {kind: "rpc", fn, args}
   async push(job) {
-    const entry = { ...job, id: crypto.randomUUID(), seq: Date.now() * 1000 + (this.counter++ % 1000),
+    const entry = { ...job, sessionId: this.api.sessionId, id: crypto.randomUUID(), seq: Date.now() * 1000 + (this.counter++ % 1000),
                     attempts: 0, notBefore: 0, size: job.blob?.size || 0 };
     this.queue.push(entry);
     if (this.db) {

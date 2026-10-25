@@ -188,7 +188,12 @@ function flagsFor(session, trials, survey, events) {
   if (survey?.answers?.tech_problem === "yes") flags.push(["reported tech problem", "warn"]);
   const live = session.live || {};
   if (!TERMINAL.has(session.status) && live.outbox?.jobs > 20) flags.push([`upload backlog ${live.outbox.jobs}`, "bad"]);
-  if (live.outbox?.dead > 0) flags.push([`${live.outbox.dead} permanently failed uploads`, "bad"]);
+  const failedPathSession = String(live.outbox?.last_error || "").match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\//i)?.[1];
+  // Older builds reused one browser outbox between test sessions. Do not blame
+  // the current session for a failure whose Storage path belongs to another one.
+  if (live.outbox?.dead > 0 && (!failedPathSession || failedPathSession === session.id)) {
+    flags.push([`${live.outbox.dead} permanently failed uploads`, "bad"]);
+  }
   return flags;
 }
 
@@ -301,7 +306,7 @@ async function viewSessions() {
         pill(s.status, s.status === "completed" ? "good" : TERMINAL.has(s.status) ? "bad" : "info"),
         s.step, when(s.created_at), duration ? fmtSec(duration) : `seen ${ago(s.last_seen_at)}`, s.slot_index ?? "–", s.arm ? ARMS[s.arm] : "–",
         el("span", {}, ...ts.map((t) => pill(`${t.trial_index}: ${t.condition}${t.correct === null ? "" : t.correct ? ", correct" : ", wrong"}`, t.correct ? "good" : "bad"))),
-        el("span", {}, ...ts.map((t) => `${fmtPct(num(t.speech_ratio))} `)),
+        el("span", { class: "session-speech" }, ...ts.map((t) => el("span", {}, `Q${t.trial_index} ${fmtPct(num(t.speech_ratio))}`))),
         el("span", {}, ...flags.map(([text, kind]) => pill(text, kind))),
         pill(s.review_status, s.review_status === "approved" ? "good" : s.review_status === "rejected" ? "bad" : ""),
       ],
