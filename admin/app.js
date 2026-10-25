@@ -425,8 +425,8 @@ async function viewSession(id) {
     let match = null;
     for (const rec of timedRecordings) {
       const start = Number(rec.client_started_wall);
-      if (start > wallMs + 150) break;
-      if (wallMs >= start - 150 && wallMs <= start + Number(rec.duration_ms) + 450) match = rec;
+      if (start > wallMs) break;
+      if (wallMs >= start && wallMs <= start + Number(rec.duration_ms)) match = rec;
     }
     return match;
   };
@@ -487,12 +487,11 @@ async function viewSession(id) {
         type: "button", class: "replay-event", style: `--event-color:${color}`,
         title: `Jump to ${fmtSec(timestamp - replayStart)}`,
         onclick: () => {
-          player?.goto(timestamp - replayStart, false);
+          const keepPlaying = playing;
           lastWall = timestamp;
-          playing = false;
-          active?.audio.pause();
+          player?.goto(timestamp - replayStart, keepPlaying);
           syncEventFeed(timestamp);
-          syncAudio(timestamp);
+          syncAudio(timestamp, { force: true, shouldPlay: keepPlaying });
         },
       },
       el("span", { class: "replay-event-time" }, fmtSec(timestamp - replayStart)),
@@ -519,6 +518,10 @@ async function viewSession(id) {
       let lastWall = first;
       let syncVersion = 0;
       let activeEventIndex = -1;
+      const replaySpeed = () => {
+        const speed = Number(player?.getReplayer?.()?.config?.speed);
+        return Number.isFinite(speed) && speed > 0 ? speed : 1;
+      };
       const syncEventFeed = (wallMs) => {
         let index = -1;
         for (let i = 0; i < replayEvents.length && replayEvents[i].timestamp <= wallMs; i++) index = i;
@@ -530,7 +533,7 @@ async function viewSession(id) {
           eventRows[index].scrollIntoView({ block: "nearest" });
         }
       };
-      const syncAudio = async (wallMs) => {
+      const syncAudio = async (wallMs, { force = false, shouldPlay = playing } = {}) => {
         const rec = recordingAt(wallMs);
         if (!rec) {
           if (active) active.audio.pause();
@@ -548,8 +551,11 @@ async function viewSession(id) {
           await ensureAudio(rec, selected.audio);
           if (version !== syncVersion || active !== selected) return;
           const seconds = Math.max(0, (wallMs - Number(rec.client_started_wall)) / 1000);
-          if (Math.abs(selected.audio.currentTime - seconds) > 0.6) selected.audio.currentTime = seconds;
-          if (playing) selected.audio.play().catch(() => {});
+          const speed = replaySpeed();
+          if (selected.audio.playbackRate !== speed) selected.audio.playbackRate = speed;
+          if (force || Math.abs(selected.audio.currentTime - seconds) > 0.2) selected.audio.currentTime = seconds;
+          if (shouldPlay) selected.audio.play().catch(() => {});
+          else selected.audio.pause();
         } catch (err) {
           replayStatus.className = "replay-status warn";
           replayStatus.textContent = `Replay loaded, but synchronized audio could not be loaded: ${err.message}`;

@@ -127,13 +127,33 @@ export function likert(name, n, { low = "", high = "", labels = null } = {}) {
   return { node, value: () => { const checked = opts.find((o) => o.checked); return checked ? Number(checked.value) : null; }, inputs: opts };
 }
 
-// 0-100 slider with 0 as its visible and recorded starting value.
+// 0-100 slider that must be deliberately touched before it counts as answered.
 export function scaleSlider(name, { low, high }) {
-  const input = el("input", { type: "range", min: "0", max: "100", step: "5", value: "0", autocomplete: "off", "data-tid": `tlx-${name}` });
-  const out = el("output", {}, "0");
-  input.addEventListener("input", () => { out.textContent = input.value; });
+  const input = el("input", {
+    type: "range", min: "0", max: "100", step: "1", value: "0", autocomplete: "off",
+    class: "untouched", "aria-invalid": "true", "aria-valuetext": "No answer", "data-tid": `tlx-${name}`,
+  });
+  const out = el("output", { class: "unanswered" }, "–");
+  let touched = false;
+  const answerListeners = new Set();
+  const touch = () => {
+    touched = true;
+    input.classList.remove("untouched");
+    input.removeAttribute("aria-invalid");
+    input.setAttribute("aria-valuetext", input.value);
+    out.classList.remove("unanswered");
+    out.textContent = input.value;
+    answerListeners.forEach((listener) => listener());
+  };
+  input.addEventListener("input", touch);
+  // A click at the far-left end is an intentional answer of 0 even though the
+  // range element's numeric value does not change and no input event fires.
+  input.addEventListener("pointerdown", touch);
+  input.addEventListener("keydown", (event) => {
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) touch();
+  });
   const node = el("div", { class: "tlx-scale" }, el("div", { class: "tlx-row" }, el("span", {}, low), input, el("span", {}, high), out));
-  return { node, value: () => Number(input.value), input };
+  return { node, value: () => (touched ? Number(input.value) : null), input, onAnswer: (listener) => answerListeners.add(listener) };
 }
 
 export function errorBox(message) {

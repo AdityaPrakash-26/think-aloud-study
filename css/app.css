@@ -279,7 +279,9 @@ html.eraser-dragging, html.eraser-dragging * { cursor: var(--eraser-cursor) !imp
 .tlx-row { display: grid; grid-template-columns: 76px 1fr 76px 40px; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--graphite); }
 .tlx-row span:nth-child(3) { text-align: right; }
 .tlx-row output { font-weight: 700; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.tlx-row output.unanswered { color: #8A949E; }
 input[type="range"] { width: 100%; accent-color: var(--petrol); height: 28px; cursor: pointer; }
+input[type="range"].untouched { opacity: 0.4; filter: grayscale(1); }
 .options { display: flex; flex-wrap: wrap; gap: 8px 22px; }
 .options .check { margin: 4px 0; }
 .checks .mark { width: 1.1em; font-weight: 700; flex: none; }

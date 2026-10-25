@@ -121,7 +121,9 @@ export class Telemetry {
       const record = window.rrwebRecord?.record || window.rrwebRecord;
       this.stopRrweb = record({
         emit: (event) => this.rrweb.push(event),
-        sampling: { mousemove: 50, mouseInteraction: true, scroll: 100, media: 800, input: "last" },
+        // Do not use input: "last": that records only the change/blur event and
+        // makes a whole typed answer appear at once during replay.
+        sampling: { mousemove: 50, mouseInteraction: true, scroll: 100, media: 800 },
         recordCanvas: false,
         maskAllInputs: false,
         inlineStylesheet: true,

@@ -113,7 +113,7 @@ export class Recorder {
   startPart(segment, part) {
     const state = {
       id: uuid(), segment, part, seq: 0, bytes: 0,
-      startWall: wall(), startT: t(), stopped: null,
+      startWall: null, startT: null, stopped: null,
     };
     const mr = new MediaRecorder(this.mic.stream, {
       ...(this.format.mime ? { mimeType: this.format.mime } : {}),
@@ -121,11 +121,6 @@ export class Recorder {
     });
     state.mr = mr;
     state.stopped = new Promise((resolve) => mr.addEventListener("stop", resolve, { once: true }));
-
-    this.outbox.push({ kind: "rpc", fn: "register_recording", args: {
-      p_id: state.id, p_segment: segment, p_part: part, p_mime: mr.mimeType || this.format.mime,
-      p_started_wall: state.startWall, p_started_t: state.startT,
-    } });
 
     mr.addEventListener("dataavailable", (event) => {
       if (!event.data || event.data.size === 0) return;
@@ -144,7 +139,14 @@ export class Recorder {
       this.telemetry.log("rec_error", { rec: state.id, error: String(event.error?.message || event.error || "unknown") }, { milestone: true });
     });
     mr.addEventListener("start", () => {
+      // Anchor synchronization to the browser's actual recording start rather
+      // than to MediaRecorder construction, which may happen noticeably sooner.
+      state.startWall = wall();
       state.startT = t();
+      this.outbox.push({ kind: "rpc", fn: "register_recording", args: {
+        p_id: state.id, p_segment: segment, p_part: part, p_mime: mr.mimeType || this.format.mime,
+        p_started_wall: state.startWall, p_started_t: state.startT,
+      } });
       this.telemetry.log("rec_start", { rec: state.id, segment, part, mime: mr.mimeType }, { milestone: true });
     });
 
@@ -191,7 +193,7 @@ export class Recorder {
       state.mr.stop();
     }
     await Promise.race([state.stopped, sleep(3000)]);
-    const durationMs = Math.round(t() - state.startT);
+    const durationMs = Math.round(t() - (state.startT ?? t()));
     this.outbox.push({ kind: "rpc", fn: "finalize_recording", args: {
       p_recording: state.id, p_chunk_count: state.seq, p_bytes: state.bytes, p_duration_ms: durationMs,
     } });

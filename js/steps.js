@@ -467,12 +467,12 @@ export async function tlx(ctx, i, spec) {
   const easeTA = likert(`ta-ease-${i}`, 5, { low: "Very hard", high: "Very easy" });
   const next = button("Continue", null, { tid: "tlx-next", disabled: true });
   const update = () => { next.disabled = !(scales.every((s) => s.ui.value() !== null) && familiar.value() && easeTA.value()); };
-  for (const s of scales) s.ui.input.addEventListener("input", update);
+  for (const s of scales) s.ui.onAnswer(update);
   for (const input of [...familiar.inputs, ...easeTA.inputs]) input.addEventListener("change", update);
   const label = spec.condition === "text" ? "text" : "image";
   show(el("div", { class: "screen" }, topbar(`${label === "text" ? "Text" : "Image"} comparison`, ctx.mic, ctx.detector),
     page("How did that comparison feel?",
-      para(`Answer each question about the ${label} comparison you just completed. The sliders start at 0; move any slider when a different score fits better.`),
+      para(`Answer each question about the ${label} comparison you just completed. Click or move every slider, including when your answer is 0.`),
       ...scales.map((s) => el("div", { class: "tlx-item" }, el("div", { class: "tlx-q" }, el("b", {}, s.name), el("span", {}, s.question)), s.ui.node)),
       el("div", { class: "tlx-item" }, el("div", { class: "tlx-q" }, el("b", {}, "Familiarity"), el("span", {}, "How familiar were you with the topic of this question before the study?")), familiar.node),
       el("div", { class: "tlx-item" }, el("div", { class: "tlx-q" }, el("b", {}, "Thinking aloud"), el("span", {}, "How easy was it to think aloud during this comparison?")), easeTA.node),
