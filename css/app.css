@@ -238,6 +238,7 @@ mark.hl-unsure { background: var(--unsure-bg); }
 .tool-eraser .ink .stroke-hit { pointer-events: stroke; }
 .tool-eraser .surface, .tool-eraser .viewport, .tool-eraser .ink .stroke,
 .tool-eraser .ink .stroke-hit, .tool-eraser mark.hl, .tool-eraser .note { cursor: var(--eraser-cursor); }
+html.eraser-dragging, html.eraser-dragging * { cursor: var(--eraser-cursor) !important; }
 .tool-pen .content, .tool-note .content, .tool-eraser .content { user-select: none; }
 
 /* decision bar */

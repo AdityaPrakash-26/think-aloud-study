@@ -279,6 +279,10 @@ function captureEraser(root, annotator) {
   let pointerId = null;
   let lastPoint = null;
 
+  const setDraggingCursor = (dragging) => {
+    document.documentElement.classList.toggle("eraser-dragging", dragging);
+  };
+
   const eraseAt = (event) => {
     const removed = new Set();
     for (const node of document.elementsFromPoint(event.clientX, event.clientY)) {
@@ -311,6 +315,7 @@ function captureEraser(root, annotator) {
     event.preventDefault();
     event.stopPropagation();
     root.setPointerCapture(pointerId);
+    setDraggingCursor(true);
     lastPoint = null;
     eraseThrough(event);
   }, { capture: true });
@@ -320,6 +325,7 @@ function captureEraser(root, annotator) {
     if (!(event.buttons & 1) || annotator.tool !== "eraser") {
       pointerId = null;
       lastPoint = null;
+      setDraggingCursor(false);
       return;
     }
     event.preventDefault();
@@ -333,6 +339,7 @@ function captureEraser(root, annotator) {
     if (annotator.tool === "eraser") eraseThrough(event);
     pointerId = null;
     lastPoint = null;
+    setDraggingCursor(false);
     event.preventDefault();
     event.stopPropagation();
   };
