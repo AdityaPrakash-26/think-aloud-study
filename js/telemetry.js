@@ -156,9 +156,11 @@ export class Telemetry {
     const lastT = kind === "events" ? batch[batch.length - 1].t : batch[batch.length - 1].timestamp;
     const { blob, gzip } = await gzipJson({ session_id: this.sessionId, kind, seq, epoch_wall: WALL_EPOCH, events: batch });
     const path = `${this.sessionId}/${kind}-${String(seq).padStart(6, "0")}.json${gzip ? ".gz" : ""}`;
-    await this.outbox.push({ kind: "upload", bucket: "telemetry", path, blob, contentType: gzip ? "application/gzip" : "application/json" });
-    await this.outbox.push({ kind: "rpc", fn: "register_telemetry", args: {
-      p_kind: kind, p_seq: seq, p_path: path, p_n: batch.length, p_bytes: blob.size, p_first_t: firstT, p_last_t: lastT,
-    } });
+    await this.outbox.push({
+      kind: "upload", bucket: "telemetry", path, blob, contentType: gzip ? "application/gzip" : "application/json",
+      afterUpload: { fn: "register_telemetry", args: {
+        p_kind: kind, p_seq: seq, p_path: path, p_n: batch.length, p_bytes: blob.size, p_first_t: firstT, p_last_t: lastT,
+      } },
+    });
   }
 }

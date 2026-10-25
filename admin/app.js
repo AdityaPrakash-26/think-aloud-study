@@ -60,6 +60,38 @@ async function blobText(blob, gz) {
   return new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text();
 }
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function downloadStorage(bucket, path, expectedBytes = null, attempts = 5) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const { data, error } = await sb.storage.from(bucket).download(path);
+    if (!error && data) {
+      if (expectedBytes === null || Number(expectedBytes) === data.size) return data;
+      lastError = new Error(`${path} downloaded ${data.size} bytes; expected ${expectedBytes}`);
+    } else {
+      lastError = new Error(error?.message || `${path} could not be downloaded`);
+    }
+    if (attempt < attempts - 1) await wait(300 * 2 ** attempt);
+  }
+  throw lastError;
+}
+
+const replayMarkerColor = (type) => /error|failed|rejection/i.test(type) ? "#dc2626"
+  : /nudge|silent/i.test(type) ? "#ca8a04"
+    : /trial|choice|submit/i.test(type) ? "#0e5f67"
+      : /mic|speech|record/i.test(type) ? "#2563eb" : "#7c3aed";
+
+function eventSummary(event) {
+  const payload = event.payload || {};
+  const preferred = ["step", "trial", "condition", "side", "choice", "value", "phase", "reason", "outcome", "heard", "vad"]
+    .filter((key) => payload[key] !== undefined)
+    .map((key) => `${key.replaceAll("_", " ")}: ${typeof payload[key] === "object" ? JSON.stringify(payload[key]) : payload[key]}`);
+  if (preferred.length) return preferred.join(" · ");
+  const raw = JSON.stringify(payload);
+  return raw === "{}" ? "" : raw.slice(0, 180);
+}
+
 // ---------------------------------------------------------------------------
 // auth + layout
 // ---------------------------------------------------------------------------
@@ -291,7 +323,7 @@ async function loadRecordingAudio(rec, sessionId) {
     for (;;) {
       const index = next++;
       if (index >= files.length) return;
-      parts[index] = await q(sb.storage.from("recordings").download(`${prefix}/${files[index].name}`));
+      parts[index] = await downloadStorage("recordings", `${prefix}/${files[index].name}`, files[index].metadata?.size ?? null);
     }
   }));
   return new Blob(parts, { type: (rec.mime || "audio/webm").split(";")[0] });
@@ -405,13 +437,15 @@ async function viewSession(id) {
     replayBox.replaceChildren(replayStatus);
     replayStatus.className = "replay-status muted";
     try {
-      const rr = batches.filter((b) => b.kind === "rrweb");
+      const rr = batches.filter((b) => b.kind === "rrweb").sort((a, b) => a.seq - b.seq);
       if (!rr.length) throw new Error("No replay batches were uploaded for this session.");
+      const missingSeq = rr.findIndex((batch, index) => Number(batch.seq) !== index);
+      if (missingSeq >= 0) throw new Error(`Replay metadata is incomplete: expected batch ${missingSeq}, found ${rr[missingSeq].seq}.`);
       let processed = 0;
       replayStatus.textContent = `Loading replay files… 0 of ${rr.length}`;
       const results = await Promise.allSettled(rr.map(async (b) => {
         try {
-          const blob = await q(sb.storage.from("telemetry").download(b.path));
+          const blob = await downloadStorage("telemetry", b.path, b.bytes, 5);
           const parsed = JSON.parse(await blobText(blob, b.path.endsWith(".gz")));
           if (!Array.isArray(parsed.events)) throw new Error(`${b.path} does not contain replay events`);
           return parsed.events;
@@ -421,23 +455,25 @@ async function viewSession(id) {
         }
       }));
       const failed = results.filter((result) => result.status === "rejected");
+      if (failed.length) {
+        const firstFailed = results.findIndex((result) => result.status === "rejected");
+        throw new Error(`${failed.length} of ${rr.length} replay files could not be read after 5 attempts. First failure: ${rr[firstFailed].path} (${failed[0].reason?.message || "unknown error"})`);
+      }
       const evs = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
       evs.sort((a, b) => a.timestamp - b.timestamp);
-      if (evs.length < 2) throw new Error(failed[0]?.reason?.message || "The uploaded replay does not contain enough events.");
+      if (evs.length < 2) throw new Error("The uploaded replay does not contain enough events.");
       const replayStart = evs[0].timestamp;
       const replayEnd = evs.at(-1).timestamp;
-      const markerColor = (type) => /error|failed|rejection/i.test(type) ? "#dc2626"
-        : /nudge|silent/i.test(type) ? "#ca8a04"
-          : /trial|choice|submit/i.test(type) ? "#0e5f67"
-            : /mic|speech|record/i.test(type) ? "#2563eb" : "#7c3aed";
       const eventTags = {};
-      const markerEvents = events.flatMap((event) => {
+      const replayEvents = events.flatMap((event) => {
         const timestamp = Number(event.client_wall || new Date(event.created_at).getTime());
         if (!Number.isFinite(timestamp) || timestamp < replayStart || timestamp > replayEnd) return [];
         const tag = event.type.replaceAll("_", " ");
-        eventTags[tag] = markerColor(event.type);
-        return [{ type: 5, timestamp, data: { tag, payload: event.payload || {} } }];
-      });
+        const color = replayMarkerColor(event.type);
+        eventTags[tag] = color;
+        return [{ event, timestamp, tag, color }];
+      }).sort((a, b) => a.timestamp - b.timestamp);
+      const markerEvents = replayEvents.map(({ event, timestamp, tag }) => ({ type: 5, timestamp, data: { tag, payload: event.payload || {} } }));
       evs.push(...markerEvents);
       evs.sort((a, b) => a.timestamp - b.timestamp);
       const Player = window.rrwebPlayer?.default || window.rrwebPlayer;
@@ -446,15 +482,54 @@ async function viewSession(id) {
       const audioResults = await Promise.allSettled(timedRecordings.map((rec) => ensureAudio(rec, audioEls.get(rec.id).audio)));
       const failedAudio = audioResults.filter((result) => result.status === "rejected").length;
       if (seq !== navSeq) return;
-      const target = el("div", { class: "replay-wrap" });
-      replayBox.append(target);
-      const player = new Player({ target, props: { events: evs, width: 1180, height: 700, autoPlay: false, skipInactive: true,
-                                                    speedOption: [1, 2, 4, 8], tags: eventTags } });
+      let player = null;
+      const eventRows = replayEvents.map(({ event, timestamp, tag, color }) => el("button", {
+        type: "button", class: "replay-event", style: `--event-color:${color}`,
+        title: `Jump to ${fmtSec(timestamp - replayStart)}`,
+        onclick: () => {
+          player?.goto(timestamp - replayStart, false);
+          lastWall = timestamp;
+          playing = false;
+          active?.audio.pause();
+          syncEventFeed(timestamp);
+          syncAudio(timestamp);
+        },
+      },
+      el("span", { class: "replay-event-time" }, fmtSec(timestamp - replayStart)),
+      el("span", { class: "replay-event-copy" }, el("b", {}, tag), eventSummary(event) ? el("small", {}, eventSummary(event)) : null)));
+      const eventList = el("div", { class: "replay-event-list" }, ...(eventRows.length ? eventRows : [el("p", { class: "muted" }, "No timeline events fall inside this replay.")]));
+      const eventFeed = el("aside", { class: "replay-events", "aria-label": "Timeline events" },
+        el("div", { class: "replay-events-head" }, el("div", {}, el("div", { class: "eyebrow" }, "Synchronized"), el("h3", {}, "Timeline events")), el("span", { class: "pill info" }, eventRows.length)),
+        el("div", { class: "replay-legend", "aria-label": "Timeline marker colors" },
+          el("span", { style: "--event-color:#7c3aed" }, "Activity"), el("span", { style: "--event-color:#ca8a04" }, "Nudge"),
+          el("span", { style: "--event-color:#0e5f67" }, "Answer"), el("span", { style: "--event-color:#2563eb" }, "Audio"),
+          el("span", { style: "--event-color:#dc2626" }, "Error")),
+        eventList);
+      const target = el("div", { class: "replay-player" });
+      const replayLayout = el("div", { class: "replay-layout" }, el("div", { class: "replay-wrap" }, target), eventFeed);
+      replayBox.append(replayLayout);
+      const playerWidth = Math.min(1180, Math.max(640, Math.floor(target.clientWidth || 960)));
+      const playerHeight = Math.round(playerWidth * 700 / 1180);
+      eventFeed.style.maxHeight = `${playerHeight + 80}px`;
+      player = new Player({ target, props: { events: evs, width: playerWidth, height: playerHeight, autoPlay: false, skipInactive: true,
+                                             speedOption: [1, 2, 4, 8], tags: eventTags } });
       const first = replayStart;
       let active = null;
       let playing = false;
       let lastWall = first;
       let syncVersion = 0;
+      let activeEventIndex = -1;
+      const syncEventFeed = (wallMs) => {
+        let index = -1;
+        for (let i = 0; i < replayEvents.length && replayEvents[i].timestamp <= wallMs; i++) index = i;
+        if (index === activeEventIndex) return;
+        if (activeEventIndex >= 0) eventRows[activeEventIndex]?.classList.remove("active");
+        activeEventIndex = index;
+        if (index >= 0) {
+          eventRows[index].classList.add("active");
+          eventRows[index].scrollIntoView({ block: "nearest" });
+        }
+      };
       const syncAudio = async (wallMs) => {
         const rec = recordingAt(wallMs);
         if (!rec) {
@@ -483,18 +558,19 @@ async function viewSession(id) {
       player.addEventListener("ui-update-current-time", ({ payload }) => {
         lastWall = first + Number(payload || 0);
         syncAudio(lastWall);
+        syncEventFeed(lastWall);
       });
       player.addEventListener("ui-update-player-state", ({ payload }) => {
         playing = payload === "playing";
         if (playing) syncAudio(lastWall); else active?.audio.pause();
       });
+      syncEventFeed(first);
       btn.remove();
       const issues = [];
-      if (failed.length) issues.push(`${failed.length} of ${rr.length} replay files could not be read`);
       if (failedAudio) issues.push(`${failedAudio} audio recording${failedAudio === 1 ? "" : "s"} could not be loaded`);
       replayStatus.textContent = issues.length
-        ? `Replay ready, but ${issues.join(" and ")}. ${markerEvents.length} timeline events are marked.`
-        : `Replay ready · audio syncs automatically · ${markerEvents.length} timeline events marked.`;
+        ? `Replay ready, but ${issues.join(" and ")}. ${markerEvents.length} timeline events are shown beside the video.`
+        : `Replay ready · all ${rr.length} replay files verified · audio syncs automatically · ${markerEvents.length} timeline events shown.`;
       replayStatus.className = issues.length ? "replay-status warn" : "replay-status ok-note";
     } catch (err) {
       btn.disabled = false;
@@ -528,7 +604,7 @@ async function viewSession(id) {
       el("div", { class: "section-heading" },
         el("div", {}, el("div", { class: "eyebrow" }, "Session playback"), el("h2", {}, "Screen replay")),
         loadReplay),
-      el("p", { class: "section-copy" }, "The replay loads automatically. Microphone audio follows it by timestamp, and colored markers on the scrubber show events from the session timeline."),
+      el("p", { class: "section-copy" }, "The replay loads automatically. Microphone audio follows it by timestamp. Colored markers on the scrubber match the event feed beside the video; the current event is highlighted as playback moves."),
       replayBox),
     el("div", { class: "cards session-cards" },
       card("Progress", session.step || "–", `last seen ${ago(session.last_seen_at)}`),

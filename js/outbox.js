@@ -57,7 +57,9 @@ export class Outbox {
     return this.queue.length;
   }
 
-  // job: {kind: "upload", bucket, path, blob, contentType} | {kind: "rpc", fn, args}
+  // An upload may include afterUpload: {fn, args}. It stays one durable job so
+  // its database row can never be registered before the object is readable.
+  // job: {kind: "upload", bucket, path, blob, contentType, afterUpload?} | {kind: "rpc", fn, args}
   async push(job) {
     const entry = { ...job, id: crypto.randomUUID(), seq: Date.now() * 1000 + (this.counter++ % 1000),
                     attempts: 0, notBefore: 0, size: job.blob?.size || 0 };
@@ -107,6 +109,7 @@ export class Outbox {
     try {
       if (job.kind === "upload") {
         await this.api.uploadObject(job.bucket, job.path, job.blob, job.contentType);
+        if (job.afterUpload) await this.api.rpc(job.afterUpload.fn, job.afterUpload.args);
         this.stats.bytesSent += job.size;
       } else {
         await this.api.rpc(job.fn, job.args);
