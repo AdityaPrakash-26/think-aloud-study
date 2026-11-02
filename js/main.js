@@ -15,6 +15,8 @@ const telemetry = new Telemetry();
 telemetry.start(); // buffers until the session exists
 
 const STATUS_FOR_STEP = { tutorial: "warmup_done", trial_1: "in_trials", survey: "post_survey" };
+// The slot is claimed before the tools practice, which runs in the slot's text/image order.
+const NEEDS_SLOT = new Set(["tutorial", "trial_1", "tlx_1", "trial_2", "tlx_2"]);
 const NEEDS_AUDIO = new Set(["instructions", "warmup_multiply", "warmup_windows", "warmup_animals", "tutorial",
                              "trial_1", "tlx_1", "trial_2", "tlx_2", "survey"]);
 
@@ -178,7 +180,7 @@ async function boot() {
       ctx.recorder.start("study");
       telemetry.log("continuous_recording_started", { step }, { milestone: true });
     }
-    if ((step === "trial_1" || step === "trial_2") && !ctx.plan) {
+    if (NEEDS_SLOT.has(step) && !ctx.plan) {
       const claim = await ctx.reliably("claim_slot", {});
       if (claim.outcome !== "assigned") {
         telemetry.log("no_slot", { outcome: claim.outcome }, { milestone: true });

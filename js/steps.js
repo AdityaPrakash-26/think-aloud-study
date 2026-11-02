@@ -337,10 +337,9 @@ async function practicePanel(ctx, { title, condition, panes, items, match }) {
   return { ...annot.serialize(), choice: decision.state.choice, confidence: decision.confidence() };
 }
 
-export async function tutorial(ctx) {
-  ctx.nudger.activate("tutorial");
-  const textResult = await practicePanel(ctx, {
-    title: "Practice 1 of 2: text answers", condition: "text", panes: PRACTICE.text,
+const PRACTICE_PANELS = {
+  text: {
+    label: "text answers", panes: PRACTICE.text,
     items: [["good", "Use Good to highlight text you like"], ["bad", "Use Bad to highlight text you do not like"],
             ["pen", "Draw something with Pen"], ["note", "Add a Note and press Enter"], ["erase", "Remove a mark with Eraser or Undo"]],
     match: (type, data) => [
@@ -350,9 +349,9 @@ export async function tutorial(ctx) {
       ...(type === "note_edit" && data.len > 0 ? ["note"] : []),
       ...(type === "mark_delete" || type === "undo" ? ["erase"] : []),
     ],
-  });
-  const imageResult = await practicePanel(ctx, {
-    title: "Practice 2 of 2: image answers", condition: "image", panes: PRACTICE.image,
+  },
+  image: {
+    label: "image answers", panes: PRACTICE.image,
     items: [["zoom", "Zoom in with the mouse wheel or + button"], ["move", "Use Move to drag the image"],
             ["hl", "Use Good, Bad, or Unsure to mark part of an image"]],
     match: (type, data) => [
@@ -360,9 +359,21 @@ export async function tutorial(ctx) {
       ...(type === "img_view" && data.kind === "pan" ? ["move"] : []),
       ...(type === "mark_create" && data.valence ? ["hl"] : []),
     ],
-  });
+  },
+};
+
+export async function tutorial(ctx) {
+  // Practice in the same order as the two comparisons, so image-first participants practice images first.
+  const order = ctx.plan.trials.map((trial) => trial.condition);
+  ctx.nudger.activate("tutorial");
+  const results = {};
+  for (const [n, condition] of order.entries()) {
+    const { label, ...panel } = PRACTICE_PANELS[condition];
+    results[condition] = await practicePanel(ctx, { title: `Practice ${n + 1} of 2: ${label}`, condition, ...panel });
+  }
+  const { text: textResult, image: imageResult } = results;
   ctx.nudger.deactivate();
-  ctx.telemetry.log("tutorial_done", { text: textResult.summary, image: imageResult.summary,
+  ctx.telemetry.log("tutorial_done", { order, text: textResult.summary, image: imageResult.summary,
                                        choices: { text: [textResult.choice, textResult.confidence], image: [imageResult.choice, imageResult.confidence] } },
                     { milestone: true });
 
